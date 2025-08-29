@@ -2,6 +2,7 @@ import torch
 import triton
 import triton.language as tl
 import triton.testing
+import os
 
 '''
 This kernel's case:
@@ -337,6 +338,10 @@ def flash_attention_kernel(
 
 # flash_attention_
 def flash_attention_(Q, K, V, causal, softmax_scale):
+
+    VAR_Q_SEQ_BLK_SIZE = int(os.environ.get("VAR_Q_SEQ_BLK_SIZE", 64))
+    VAR_KV_SEQ_BLK_SIZE = int(os.environ.get("VAR_KV_SEQ_BLK_SIZE", 64))
+
     # prepare some value for calling triton kernel
     B, H, S, D = Q.shape
     assert K.shape == (B, H, S, D)
@@ -349,7 +354,7 @@ def flash_attention_(Q, K, V, causal, softmax_scale):
 
     grid = (
         B * H,
-        triton.cdiv(S, 64),
+        triton.cdiv(S, VAR_Q_SEQ_BLK_SIZE),
         1,
     )
 
@@ -367,8 +372,8 @@ def flash_attention_(Q, K, V, causal, softmax_scale):
         NUM_HEADS=H,
         SEQ_LEN=S,
         HEAD_DIM=D,
-        QO_SEQ_BLOCK_SIZE=64,
-        KV_SEQ_BLOCK_SIZE=64,
+        QO_SEQ_BLOCK_SIZE=VAR_Q_SEQ_BLK_SIZE,
+        KV_SEQ_BLOCK_SIZE=VAR_KV_SEQ_BLK_SIZE,
         STAGE=stage,
     )
 
@@ -436,9 +441,19 @@ def test_op(BATCH_SIZE, NUM_HEADS_KV, SEQ_LEN, HEAD_DIM, causal, dtype=torch.flo
 
 
 if __name__ == "__main__":
+
+    # set VAR_Q_SEQ_BLK_SIZE, VAR_KV_SEQ_BLK_SIZE
+    os.environ["VAR_Q_SEQ_BLK_SIZE"] = "64"
+    os.environ["VAR_KV_SEQ_BLK_SIZE"] = "16"
+    
+    # When causal is true, KV_SEQ_BLK_SIZE must be Q_SEQ_BLK_SIZE/2^i where i>=0. 
+    # Because when causal is true, the attn is done by two split parts, we need to ensure the dividing line should be dividable by KV_SEQ_BLK_SIZE.
+
+    # When causal is false, this problem doesn't exist. 
+
     test_op(
         BATCH_SIZE=8,
-        NUM_HEADS_KV=8,
+        NUM_HEADS_KV=16,
         SEQ_LEN=1024,
         HEAD_DIM=64,
         causal=True,
@@ -451,10 +466,9 @@ Test on NVIDIA RTX 5000 Ada Generation
 Output:
 ```
 Benchmarking reference implementation...
-Reference implementation: 4.496 ms
+Reference implementation: 8.889 ms
 Benchmarking Triton implementation...
-Triton implementation: 0.116 ms
-Speedup: 38.845x
+Triton implementation: 0.206 ms
+Speedup: 43.220x
 ```
 '''
-
