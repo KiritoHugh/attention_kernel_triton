@@ -1,6 +1,7 @@
 import torch
 import triton
 import triton.language as tl
+import triton.testing
 
 '''
 This kernel's case:
@@ -399,32 +400,39 @@ def test_op(BATCH_SIZE, NUM_HEADS_KV, SEQ_LEN, HEAD_DIM, causal, dtype=torch.flo
     )
 
     softmax_scale = 1.0 / (HEAD_DIM**0.5)
-    # the output O is torch with shape like Q
 
-
-    # reference implementation: use torch.matmul with a 2D mask after the matmul
-    MASK = torch.tril(torch.ones((SEQ_LEN, SEQ_LEN), device="cuda")) if causal else None
-    print(f"MASK type: {MASK.dtype if MASK is not None else None}")
-    P = torch.matmul(Q, K.transpose(-2,-1)) * softmax_scale
-    # print their dtype
-    print(f"Q dtype: {Q.dtype}, K dtype: {K.dtype}, V dtype: {V.dtype}, P dtype: {P.dtype}")
-    if causal:
-        P[:,:,MASK == 0] = float('-inf')
-    P = torch.softmax(P.float(), dim=-1)
-    print(f"P dtype: {P.dtype}")
-    P = P.half()
-    print(f"P dtype: {P.dtype}")
-    ref_O = torch.matmul(P, V)
-    print(f"ref_O dtype: {ref_O.dtype}")
-
+    # reference implementation
+    def reference_implementation(Q, K, V, causal, softmax_scale):
+        MASK = torch.tril(torch.ones((SEQ_LEN, SEQ_LEN), device="cuda")) if causal else None
+        P = torch.matmul(Q, K.transpose(-2,-1)) * softmax_scale
+        if causal:
+            if MASK is not None:
+                P[:,:,MASK == 0] = float('-inf')
+        P = torch.softmax(P.float(), dim=-1).half()
+        return torch.matmul(P, V)
 
     # triton implementation
-    tri_O = flash_attention_(Q, K, V, causal, softmax_scale)
+    def triton_implementation(Q, K, V, causal, softmax_scale):
+        return flash_attention_(Q, K, V, causal, softmax_scale)
 
     # compare
+    ref_O = reference_implementation(Q, K, V, causal, softmax_scale)
+    tri_O = triton_implementation(Q, K, V, causal, softmax_scale)
+    
     rtol = 0.0
     atol = 1e-2
-    assert torch.allclose(ref_O, tri_O, atol=atol, rtol=rtol)
+    assert torch.allclose(ref_O, tri_O, atol=atol, rtol=rtol), "The results are not close enough"
+
+    # benchmark
+    print("Benchmarking reference implementation...")
+    ref_ms = triton.testing.do_bench(lambda: reference_implementation(Q, K, V, causal, softmax_scale))
+    print(f"Reference implementation: {ref_ms:.3f} ms")
+
+    print("Benchmarking Triton implementation...")
+    tri_ms = triton.testing.do_bench(lambda: triton_implementation(Q, K, V, causal, softmax_scale))
+    print(f"Triton implementation: {tri_ms:.3f} ms")
+
+    print(f"Speedup: {ref_ms / tri_ms:.3f}x")
 
 
 if __name__ == "__main__":
@@ -435,3 +443,18 @@ if __name__ == "__main__":
         HEAD_DIM=64,
         causal=True,
     )
+
+
+'''
+Test on NVIDIA RTX 5000 Ada Generation
+
+Output:
+```
+Benchmarking reference implementation...
+Reference implementation: 4.496 ms
+Benchmarking Triton implementation...
+Triton implementation: 0.116 ms
+Speedup: 38.845x
+```
+'''
+
