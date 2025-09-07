@@ -6,12 +6,12 @@ import os
 
 '''
 This kernel's case:
-- The input Q K V has the same sequence length.
-- They all starts from the first token.
+- The inputs in this batch have the same sequence length. 
+- They all start from the first token.
 - Support causal and non-causal attention.
 - Only support forward for inference.
 - Support bs and bs=1.
-- Suppoer GQA
+- Support GQA
 
 '''
 
@@ -138,6 +138,7 @@ def flash_attention_kernel(
     NUM_HEADS: tl.constexpr,
     SEQ_LEN: tl.constexpr,
     HEAD_DIM: tl.constexpr,
+    GQA_group_size: tl.constexpr, 
 
     # block
     # 
@@ -160,8 +161,8 @@ def flash_attention_kernel(
     '''
 
     Q : (B, H, S, D)
-    K : (B, H, S, D)
-    V : (B, H, S, D)
+    K : (B, H // G, S, D)
+    V : (B, H // G, S, D)
 
     O = softmax(Q @ K^T * scale) @ V
 
@@ -180,12 +181,13 @@ def flash_attention_kernel(
     S_pid = tl.program_id(1)
     seq_blk_id = S_pid
 
-    qkv_offset = batch_id * stride_Q_batch + head_id * stride_Q_head
+    qo_offset = batch_id * stride_Q_batch + head_id * stride_Q_head
+    kv_offset = batch_id * stride_K_batch + (head_id // GQA_group_size) * stride_K_head 
 
 
     # O block
     O_block_ptr = tl.make_block_ptr(
-        base = O_ptr + qkv_offset,
+        base = O_ptr + qo_offset,
         shape = (SEQ_LEN, HEAD_DIM),
         strides = (stride_O_seq, stride_O_dim),
         # 
@@ -197,7 +199,7 @@ def flash_attention_kernel(
 
     # Q block
     Q_block_ptr = tl.make_block_ptr(
-        base = Q_ptr + qkv_offset,
+        base = Q_ptr + qo_offset,
         shape = (SEQ_LEN, HEAD_DIM),
         strides = (stride_Q_seq, stride_Q_dim),
         # 
@@ -209,7 +211,7 @@ def flash_attention_kernel(
 
     # K block
     K_block_ptr = tl.make_block_ptr(
-        base = K_ptr + qkv_offset,
+        base = K_ptr + kv_offset,
         shape = (HEAD_DIM, SEQ_LEN),
         strides = (
             stride_K_dim,
@@ -224,7 +226,7 @@ def flash_attention_kernel(
 
     # V block
     V_block_ptr = tl.make_block_ptr(
-        base = V_ptr + qkv_offset,
+        base = V_ptr + kv_offset,
         shape = (SEQ_LEN, HEAD_DIM),
         strides = (stride_V_seq, stride_V_dim),
         # 
@@ -336,16 +338,16 @@ def flash_attention_kernel(
 
 
 
-# flash_attention_
-def flash_attention_(Q, K, V, causal, softmax_scale):
+# flash_attention_prefill
+def flash_attention_prefill(Q, K, V, causal, softmax_scale, GQA_group_size=1):
 
     VAR_Q_SEQ_BLK_SIZE = int(os.environ.get("VAR_Q_SEQ_BLK_SIZE", 64))
     VAR_KV_SEQ_BLK_SIZE = int(os.environ.get("VAR_KV_SEQ_BLK_SIZE", 64))
 
     # prepare some value for calling triton kernel
     B, H, S, D = Q.shape
-    assert K.shape == (B, H, S, D)
-    assert V.shape == (B, H, S, D)
+    assert K.shape == (B, H // GQA_group_size, S, D)
+    assert V.shape == (B, H // GQA_group_size, S, D)
     assert D % 64 == 0, "HEAD_DIM must be a multiple of 64?"
 
     # allocate output tensor
@@ -372,6 +374,7 @@ def flash_attention_(Q, K, V, causal, softmax_scale):
         NUM_HEADS=H,
         SEQ_LEN=S,
         HEAD_DIM=D,
+        GQA_group_size=GQA_group_size,
         QO_SEQ_BLOCK_SIZE=VAR_Q_SEQ_BLK_SIZE,
         KV_SEQ_BLOCK_SIZE=VAR_KV_SEQ_BLK_SIZE,
         STAGE=stage,
@@ -379,9 +382,8 @@ def flash_attention_(Q, K, V, causal, softmax_scale):
 
     return O
 
-def test_op(BATCH_SIZE, NUM_HEADS_KV, SEQ_LEN, HEAD_DIM, causal, dtype=torch.float16):
-    GQA_group_size = 1
-    assert GQA_group_size == 1, "GQA not implemented yet"
+def test_op(BATCH_SIZE, NUM_HEADS_KV, SEQ_LEN, HEAD_DIM, causal, GQA_group_size = 1, dtype=torch.float16):
+    
     Q = (
         torch.empty(
             (BATCH_SIZE, NUM_HEADS_KV*GQA_group_size, SEQ_LEN, HEAD_DIM),
@@ -404,11 +406,17 @@ def test_op(BATCH_SIZE, NUM_HEADS_KV, SEQ_LEN, HEAD_DIM, causal, dtype=torch.flo
         ).normal_(mean=0, std=0.5)
     )
 
+    # print the shapes of Q K V
+    print(f">> Q: {Q.shape}, K: {K.shape}, V: {V.shape}, causal: {causal}, GQA_group_size: {GQA_group_size}")
+
     softmax_scale = 1.0 / (HEAD_DIM**0.5)
 
     # reference implementation
-    def reference_implementation(Q, K, V, causal, softmax_scale):
+    def reference_implementation(Q, K, V, causal, softmax_scale, GQA_group_size):
         MASK = torch.tril(torch.ones((SEQ_LEN, SEQ_LEN), device="cuda")) if causal else None
+        if GQA_group_size > 1:
+            K = K.repeat_interleave(GQA_group_size, dim=1)
+            V = V.repeat_interleave(GQA_group_size, dim=1)
         P = torch.matmul(Q, K.transpose(-2,-1)) * softmax_scale
         if causal:
             if MASK is not None:
@@ -417,12 +425,12 @@ def test_op(BATCH_SIZE, NUM_HEADS_KV, SEQ_LEN, HEAD_DIM, causal, dtype=torch.flo
         return torch.matmul(P, V)
 
     # triton implementation
-    def triton_implementation(Q, K, V, causal, softmax_scale):
-        return flash_attention_(Q, K, V, causal, softmax_scale)
+    def triton_implementation(Q, K, V, causal, softmax_scale, GQA_group_size):
+        return flash_attention_prefill(Q, K, V, causal, softmax_scale, GQA_group_size)
 
     # compare
-    ref_O = reference_implementation(Q, K, V, causal, softmax_scale)
-    tri_O = triton_implementation(Q, K, V, causal, softmax_scale)
+    ref_O = reference_implementation(Q, K, V, causal, softmax_scale, GQA_group_size)
+    tri_O = triton_implementation(Q, K, V, causal, softmax_scale, GQA_group_size)
     
     rtol = 0.0
     atol = 1e-2
@@ -430,11 +438,11 @@ def test_op(BATCH_SIZE, NUM_HEADS_KV, SEQ_LEN, HEAD_DIM, causal, dtype=torch.flo
 
     # benchmark
     print("Benchmarking reference implementation...")
-    ref_ms = triton.testing.do_bench(lambda: reference_implementation(Q, K, V, causal, softmax_scale))
+    ref_ms = triton.testing.do_bench(lambda: reference_implementation(Q, K, V, causal, softmax_scale, GQA_group_size))
     print(f"Reference implementation: {ref_ms:.3f} ms")
 
     print("Benchmarking Triton implementation...")
-    tri_ms = triton.testing.do_bench(lambda: triton_implementation(Q, K, V, causal, softmax_scale))
+    tri_ms = triton.testing.do_bench(lambda: triton_implementation(Q, K, V, causal, softmax_scale, GQA_group_size))
     print(f"Triton implementation: {tri_ms:.3f} ms")
 
     print(f"Speedup: {ref_ms / tri_ms:.3f}x")
@@ -457,6 +465,7 @@ if __name__ == "__main__":
         SEQ_LEN=1024,
         HEAD_DIM=64,
         causal=True,
+        GQA_group_size = 4,
     )
 
 
@@ -465,10 +474,11 @@ Test on NVIDIA RTX 5000 Ada Generation
 
 Output:
 ```
+>> Q: torch.Size([8, 64, 1024, 64]), K: torch.Size([8, 16, 1024, 64]), V: torch.Size([8, 16, 1024, 64]), causal: True, GQA_group_size: 4
 Benchmarking reference implementation...
-Reference implementation: 8.889 ms
+Reference implementation: 35.219 ms
 Benchmarking Triton implementation...
-Triton implementation: 0.206 ms
-Speedup: 43.220x
+Triton implementation: 0.780 ms
+Speedup: 45.180x
 ```
 '''
