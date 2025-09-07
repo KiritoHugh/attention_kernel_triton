@@ -416,6 +416,8 @@ def test_op_var_len_padding(BATCH_SIZE, NUM_HEADS_KV, SEQ_LEN, HEAD_DIM, causal,
 
     # generate random lengths for each sequence in the batch
     Ls = torch.randint(low=1, high=SEQ_LEN + 1, size=(BATCH_SIZE,), device="cuda")
+    Ls[0] = SEQ_LEN  # ensure at least one sequence has max length for better benchmarking
+    print(f">> Lengths: {Ls}")
 
     # print the shapes of Q K V
     print(f">> Q: {Q.shape}, K: {K.shape}, V: {V.shape}, causal: {causal}, GQA_group_size: {GQA_group_size}")
@@ -489,11 +491,12 @@ Test on NVIDIA RTX 5000 Ada Generation
 
 Output:
 ```
+>> Lengths: tensor([1024,  468,  631,  258,  353,  599,  732,   94], device='cuda:0')
 >> Q: torch.Size([8, 64, 1024, 64]), K: torch.Size([8, 16, 1024, 64]), V: torch.Size([8, 16, 1024, 64]), causal: True, GQA_group_size: 4
 Benchmarking reference implementation...
-Reference implementation: 74.974 ms
+Reference implementation: 75.014 ms
 Benchmarking Triton implementation...
-Triton implementation: 0.868 ms
-Speedup: 86.400x
+Triton implementation: 0.596 ms
+Speedup: 125.807x
 ```
 '''
