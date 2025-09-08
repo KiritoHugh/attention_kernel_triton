@@ -352,3 +352,20 @@ if __name__ == "__main__":
         HEAD_DIM=64,
         GQA_group_size = 4,
     )
+
+
+'''
+Test on NVIDIA RTX 5000 Ada Generation
+
+Output:
+```
+>> q: torch.Size([8, 64, 1, 64]), K: torch.Size([8, 16, 1024, 64]), V: torch.Size([8, 16, 1024, 64]), GQA_group_size: 4
+ shape of ref: torch.Size([8, 64, 1, 64])
+ shape of tri: torch.Size([8, 64, 1, 64])
+Benchmarking reference implementation...
+Reference implementation: 0.692 ms
+Benchmarking Triton implementation...
+Triton implementation: 0.102 ms
+Speedup: 6.812x
+```
+'''
