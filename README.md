@@ -42,3 +42,20 @@ Benchmarking Triton implementation...
 Triton implementation: 0.102 ms
 Speedup: 6.812x
 ```
+
+- decode_flash_attention_redundant_var_len_paged.py
+
+Output:
+```
+shape of ref_O: torch.Size([3, 4, 64])
+shape of triton_O: torch.Size([3, 4, 64])
+Number of NaNs in triton_O: 0
+Ratio of NaNs in triton_O: 0.0
+Max absolute values - ref: 1.0302734375  tri: 1.0302734375
+Max absolute difference: 0.0009765625
+Benchmarking reference implementation...
+Reference implementation: 0.763 ms
+Benchmarking Triton implementation...
+Triton implementation: 0.017 ms
+Speedup: 44.067x
+```
