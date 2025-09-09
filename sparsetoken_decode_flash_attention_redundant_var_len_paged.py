@@ -272,8 +272,8 @@ def sparsetoken_naive_paged_attention(q, paged_kv_cache, kv_page_indptr, kv_page
                 page_idx = token_idx // page_size
                 page_id = kv_page_indices[kv_page_indptr[b].item() + page_idx]
                 offset_in_page = token_idx % page_size
-                seq_head_k_parts.append(k_cache[page_idx, kv_h, offset_in_page:offset_in_page+1, :])  # [1, head_dim]
-                seq_head_v_parts.append(v_cache[page_idx, kv_h, offset_in_page:offset_in_page+1, :])
+                seq_head_k_parts.append(k_cache[page_id, kv_h, offset_in_page:offset_in_page+1, :])  # [1, head_dim]
+                seq_head_v_parts.append(v_cache[page_id, kv_h, offset_in_page:offset_in_page+1, :])
             seq_head_k = torch.cat(seq_head_k_parts, dim=0).unsqueeze(0)  # [1, seq_len, head_dim]
             seq_head_v = torch.cat(seq_head_v_parts, dim=0).unsqueeze(0)
 
@@ -398,3 +398,67 @@ def test_op_decode_paged_sparsepage(GQA_group_size = 2, dtype=torch.float16):
 
 if __name__ == "__main__":
     test_op_decode_paged_sparsepage(GQA_group_size=2, dtype=torch.float16)
+
+
+'''
+Test on NVIDIA RTX 5000 Ada Generation
+
+Output:
+```
+original_nzz: tensor([[[4319],
+         [4319],
+         [4319],
+         [4319]],
+
+        [[5599],
+         [5599],
+         [5599],
+         [5599]],
+
+        [[5135],
+         [5135],
+         [5135],
+         [5135]]], device='cuda:0', dtype=torch.int32)
+sparse_ind: tensor([[[  6, 131, 189,  ...,  -1,  -1,  -1],
+         [255, 265, 349,  ...,  -1,  -1,  -1],
+         [ 74,  83,  98,  ...,  -1,  -1,  -1],
+         [ 15,  28,  49,  ...,  -1,  -1,  -1]],
+
+        [[ 52,  59,  62,  ...,  -1,  -1,  -1],
+         [ 11,  63,  97,  ...,  -1,  -1,  -1],
+         [ 11,  46,  56,  ...,  -1,  -1,  -1],
+         [  6,  37, 225,  ...,  -1,  -1,  -1]],
+
+        [[ 27,  70, 125,  ...,  -1,  -1,  -1],
+         [ 13,  29,  36,  ...,  -1,  -1,  -1],
+         [104, 116, 153,  ...,  -1,  -1,  -1],
+         [ 19,  64,  93,  ...,  -1,  -1,  -1]]], device='cuda:0',
+       dtype=torch.int32)
+sparse_nnz: tensor([[[ 84],
+         [ 72],
+         [ 91],
+         [ 78]],
+
+        [[122],
+         [107],
+         [117],
+         [114]],
+
+        [[ 96],
+         [115],
+         [104],
+         [114]]], device='cuda:0', dtype=torch.int32)
+real kept ratio: 0.02015807622032198
+shape of ref_O: torch.Size([3, 4, 64])
+shape of tri_O: torch.Size([3, 4, 64])
+Number of NaNs in triton_O: 0
+Ratio of NaNs in triton_O: 0.0
+Max absolute values - ref: 0.5751953125  tri: 0.5751953125
+Max absolute difference: 0.00048828125
+Benchmarking reference implementation...
+Reference implementation: 59.383 ms
+Benchmarking Triton implementation...
+Triton implementation: 0.019 ms
+Speedup: 3180.933x
+```
+'''
