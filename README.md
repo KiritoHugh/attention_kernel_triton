@@ -64,18 +64,18 @@ Speedup: 44.067x
 
 Output:
 ```
-real kept ratio: 0.02015807622032198
-shape of ref_O: torch.Size([3, 4, 64])
-shape of tri_O: torch.Size([3, 4, 64])
+real kept ratio: 0.01997607291090003
+shape of ref_O: torch.Size([3, 32, 256])
+shape of tri_O: torch.Size([3, 32, 256])
 Number of NaNs in triton_O: 0
 Ratio of NaNs in triton_O: 0.0
-Max absolute values - ref: 0.5751953125  tri: 0.5751953125
-Max absolute difference: 0.00048828125
+Max absolute values - ref: 0.183837890625  tri: 0.183837890625
+Max absolute difference: 0.0001220703125
 Benchmarking reference implementation...
-Reference implementation: 59.383 ms
+Reference implementation: 7751.282 ms
 Benchmarking Triton implementation...
-Triton implementation: 0.019 ms
-Speedup: 3180.933x
+Triton implementation: 0.846 ms
+Speedup: 9162.089x
 ```
 
 - sparsetoken_decode_flash_attention_redundant.py
