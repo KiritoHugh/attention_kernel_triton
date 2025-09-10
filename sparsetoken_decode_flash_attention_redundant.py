@@ -210,14 +210,14 @@ def sparsetoken_naive_decode_by_mask(q, K, V, sparse_ind, sparse_nnz, softmax_sc
     device = q.device
     L_max = sparse_ind.shape[2]
 
-    mask = torch.zeros((B, qo_heads, SEQ_LEN), dtype=torch.bool, device=device)
-    for b in range(B):
-        for h in range(qo_heads):
-            nnz = sparse_nnz[b, h].item()
-            if nnz == 0:
-                nnz = 1
-            k_indices = sparse_ind[b, h, :nnz]  # [nnz]
-            mask[b, h, k_indices] = True  # mark the positions to keep
+    # mask = torch.zeros((B, qo_heads, SEQ_LEN), dtype=torch.bool, device=device)
+    # for b in range(B):
+    #     for h in range(qo_heads):
+    #         nnz = sparse_nnz[b, h].item()
+    #         if nnz == 0:
+    #             nnz = 1
+    #         k_indices = sparse_ind[b, h, :nnz]  # [nnz]
+    #         mask[b, h, k_indices] = True  # mark the positions to keep
 
 
     # then compute full attention, not use loop B, H
@@ -313,15 +313,15 @@ def test_op_decode_sparsetoken(GQA_group_size = 4, dtype=torch.float16):
 
 
     precompute_mask = None
-    # # first construct mask from sparse_ind and sparse_nnz
-    # precompute_mask = torch.zeros((BATCH_SIZE, num_qo_heads, SEQ_LEN), dtype=torch.bool, device=device)
-    # for b in range(BATCH_SIZE):
-    #     for h in range(num_qo_heads):
-    #         nnz = sparse_nnz[b, h].item()
-    #         if nnz == 0:
-    #             nnz = 1
-    #         k_indices = sparse_ind[b, h, :nnz]  # [nnz]
-    #         precompute_mask[b, h, k_indices] = True  # mark the positions to keep
+    # first construct mask from sparse_ind and sparse_nnz
+    precompute_mask = torch.zeros((BATCH_SIZE, num_qo_heads, SEQ_LEN), dtype=torch.bool, device=device)
+    for b in range(BATCH_SIZE):
+        for h in range(num_qo_heads):
+            nnz = sparse_nnz[b, h].item()
+            if nnz == 0:
+                nnz = 1
+            k_indices = sparse_ind[b, h, :nnz]  # [nnz]
+            precompute_mask[b, h, k_indices] = True  # mark the positions to keep
 
     ref_O_by_mask = sparsetoken_naive_decode_by_mask(q, K, V, sparse_ind, sparse_nnz, softmax_scale, GQA_group_size, precompute_mask)
     print(f"shape of ref_O_by_mask: {ref_O_by_mask.shape}")
@@ -366,21 +366,21 @@ Test on NVIDIA RTX 5000 Ada Generation
 Output:
 ```
 >> q: torch.Size([4, 32, 1, 256]), K: torch.Size([4, 8, 32000, 256]), V: torch.Size([4, 8, 32000, 256]), GQA_group_size: 4
-real kept ratio: 0.020007080078125
+real kept ratio: 0.02011767578125
 shape of ref_O: torch.Size([4, 32, 1, 256])
 shape of tri_O: torch.Size([4, 32, 1, 256])
 Number of NaNs in triton_O: 0
 Ratio of NaNs in triton_O: 0.0
 shape of ref_O_by_mask: torch.Size([4, 32, 1, 256])
-Max absolute values - ref: 0.117919921875  tri: 0.117919921875
+Max absolute values - ref: 0.0885009765625  tri: 0.0885009765625
 Max absolute difference: 6.103515625e-05
 Benchmarking reference implementation...
-Reference implementation: 288.642 ms
+Reference implementation: 288.600 ms
 Benchmarking naive_by_mask implementation...
-Reference by mask implementation: 610.794 ms
+Reference by mask implementation: 39.588 ms
 Benchmarking Triton implementation...
-Triton implementation: 0.488 ms
-Speedup over reference: 591.735x
-Speedup over reference by mask: 1252.166x
+Triton implementation: 0.462 ms
+Speedup over reference: 624.374x
+Speedup over reference by mask: 85.647x
 ```
 '''
