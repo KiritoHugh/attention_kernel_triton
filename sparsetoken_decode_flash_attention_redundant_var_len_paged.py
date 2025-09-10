@@ -288,7 +288,7 @@ def sparsetoken_naive_paged_attention(q, paged_kv_cache, kv_page_indptr, kv_page
     return torch.cat(outputs, dim=0) # [B, qo_heads, head_dim]
 
 
-def test_op_decode_paged_sparsepage(GQA_group_size = 4, dtype=torch.float16):
+def test_op_decode_paged_sparsetoken(GQA_group_size = 4, dtype=torch.float16):
     pass
 
     device = "cuda"
@@ -397,7 +397,7 @@ def test_op_decode_paged_sparsepage(GQA_group_size = 4, dtype=torch.float16):
     print(f"Speedup: {ref_ms / tri_ms:.3f}x")
 
 if __name__ == "__main__":
-    test_op_decode_paged_sparsepage(GQA_group_size=4, dtype=torch.float16)
+    test_op_decode_paged_sparsetoken(GQA_group_size=4, dtype=torch.float16)
 
 
 '''
