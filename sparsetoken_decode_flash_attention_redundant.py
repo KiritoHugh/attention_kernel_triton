@@ -201,6 +201,40 @@ def sparsetoken_naive_decode(q, K, V, sparse_ind, sparse_nnz, softmax_scale, GQA
             output[b, h, 0] = out_vec
     return output
 
+def sparsetoken_naive_decode_by_mask(q, K, V, sparse_ind, sparse_nnz, softmax_scale, GQA_group_size, mask):
+
+    B, qo_heads, _, head_dim = q.shape
+    _, kv_heads, SEQ_LEN, _ = K.shape
+    assert qo_heads % kv_heads == 0
+    assert qo_heads // kv_heads == GQA_group_size
+    device = q.device
+    L_max = sparse_ind.shape[2]
+
+    mask = torch.zeros((B, qo_heads, SEQ_LEN), dtype=torch.bool, device=device)
+    for b in range(B):
+        for h in range(qo_heads):
+            nnz = sparse_nnz[b, h].item()
+            if nnz == 0:
+                nnz = 1
+            k_indices = sparse_ind[b, h, :nnz]  # [nnz]
+            mask[b, h, k_indices] = True  # mark the positions to keep
+
+
+    # then compute full attention, not use loop B, H
+    K = K.repeat_interleave(GQA_group_size, dim=1)  # [B, qo_heads, SEQ_LEN, head_dim]
+    V = V.repeat_interleave(GQA_group_size, dim=1)  # [B, qo_heads, SEQ_LEN, head_dim]
+    attn_scores = torch.matmul(q, K.transpose(-2, -1)) * softmax_scale  # [B, qo_heads, 1, SEQ_LEN]
+    attn_scores = attn_scores.masked_fill(~mask.unsqueeze(2), float('-inf'))  # mask out the unwanted positions
+    attn_probs = torch.softmax(attn_scores, dim=-1)  # [B, qo_heads, 1, SEQ_LEN]
+    output = torch.matmul(attn_probs, V)  # [B, qo_heads, 1, head_dim]
+    return output
+
+    # then mask the output
+
+
+
+
+
 
 def test_op_decode_sparsetoken(GQA_group_size = 4, dtype=torch.float16):
     pass
@@ -278,6 +312,22 @@ def test_op_decode_sparsetoken(GQA_group_size = 4, dtype=torch.float16):
     print("Ratio of NaNs in triton_O:", torch.isnan(tri_O).float().mean().item())
 
 
+    precompute_mask = None
+    # # first construct mask from sparse_ind and sparse_nnz
+    # precompute_mask = torch.zeros((BATCH_SIZE, num_qo_heads, SEQ_LEN), dtype=torch.bool, device=device)
+    # for b in range(BATCH_SIZE):
+    #     for h in range(num_qo_heads):
+    #         nnz = sparse_nnz[b, h].item()
+    #         if nnz == 0:
+    #             nnz = 1
+    #         k_indices = sparse_ind[b, h, :nnz]  # [nnz]
+    #         precompute_mask[b, h, k_indices] = True  # mark the positions to keep
+
+    ref_O_by_mask = sparsetoken_naive_decode_by_mask(q, K, V, sparse_ind, sparse_nnz, softmax_scale, GQA_group_size, precompute_mask)
+    print(f"shape of ref_O_by_mask: {ref_O_by_mask.shape}")
+    assert torch.allclose(ref_O, ref_O_by_mask, atol=1e-2, rtol=0.0), "The results of naive and naive_by_mask are not close enough"
+
+
     rtol = 0.0
     atol = 1e-2
     # print the max absolute values
@@ -293,11 +343,16 @@ def test_op_decode_sparsetoken(GQA_group_size = 4, dtype=torch.float16):
     ref_ms = triton.testing.do_bench(lambda: sparsetoken_naive_decode(q, K, V, sparse_ind, sparse_nnz, softmax_scale, GQA_group_size))
     print(f"Reference implementation: {ref_ms:.3f} ms")
 
+    print("Benchmarking naive_by_mask implementation...")
+    ref_by_mask_ms = triton.testing.do_bench(lambda: sparsetoken_naive_decode_by_mask(q, K, V, sparse_ind, sparse_nnz, softmax_scale, GQA_group_size, precompute_mask))
+    print(f"Reference by mask implementation: {ref_by_mask_ms:.3f} ms")
+
     print("Benchmarking Triton implementation...")
     tri_ms = triton.testing.do_bench(lambda: triton_implementation(q, K, V, sparse_ind, sparse_nnz, softmax_scale, GQA_group_size))
     print(f"Triton implementation: {tri_ms:.3f} ms")
 
-    print(f"Speedup: {ref_ms / tri_ms:.3f}x")
+    print(f"Speedup over reference: {ref_ms / tri_ms:.3f}x")
+    print(f"Speedup over reference by mask: {ref_by_mask_ms / tri_ms:.3f}x")
 
 if __name__ == "__main__":
     test_op_decode_sparsetoken(GQA_group_size=4, dtype=torch.float16)
@@ -311,17 +366,21 @@ Test on NVIDIA RTX 5000 Ada Generation
 Output:
 ```
 >> q: torch.Size([4, 32, 1, 256]), K: torch.Size([4, 8, 32000, 256]), V: torch.Size([4, 8, 32000, 256]), GQA_group_size: 4
-real kept ratio: 0.019947509765625
+real kept ratio: 0.020007080078125
 shape of ref_O: torch.Size([4, 32, 1, 256])
 shape of tri_O: torch.Size([4, 32, 1, 256])
 Number of NaNs in triton_O: 0
 Ratio of NaNs in triton_O: 0.0
-Max absolute values - ref: 0.08306884765625  tri: 0.08306884765625
+shape of ref_O_by_mask: torch.Size([4, 32, 1, 256])
+Max absolute values - ref: 0.117919921875  tri: 0.117919921875
 Max absolute difference: 6.103515625e-05
 Benchmarking reference implementation...
-Reference implementation: 33.460 ms
+Reference implementation: 288.642 ms
+Benchmarking naive_by_mask implementation...
+Reference by mask implementation: 610.794 ms
 Benchmarking Triton implementation...
-Triton implementation: 0.407 ms
-Speedup: 82.137x
+Triton implementation: 0.488 ms
+Speedup over reference: 591.735x
+Speedup over reference by mask: 1252.166x
 ```
 '''
