@@ -78,3 +78,22 @@ Triton implementation: 0.019 ms
 Speedup: 3180.933x
 ```
 
+- sparsetoken_decode_flash_attention_redundant.py
+
+Output:
+```
+>> q: torch.Size([4, 32, 1, 256]), K: torch.Size([4, 8, 32000, 256]), V: torch.Size([4, 8, 32000, 256]), GQA_group_size: 4
+real kept ratio: 0.019947509765625
+shape of ref_O: torch.Size([4, 32, 1, 256])
+shape of tri_O: torch.Size([4, 32, 1, 256])
+Number of NaNs in triton_O: 0
+Ratio of NaNs in triton_O: 0.0
+Max absolute values - ref: 0.08306884765625  tri: 0.08306884765625
+Max absolute difference: 6.103515625e-05
+Benchmarking reference implementation...
+Reference implementation: 33.460 ms
+Benchmarking Triton implementation...
+Triton implementation: 0.407 ms
+Speedup: 82.137x
+```
+
