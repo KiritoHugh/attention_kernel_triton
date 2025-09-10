@@ -83,17 +83,20 @@ Speedup: 3180.933x
 Output:
 ```
 >> q: torch.Size([4, 32, 1, 256]), K: torch.Size([4, 8, 32000, 256]), V: torch.Size([4, 8, 32000, 256]), GQA_group_size: 4
-real kept ratio: 0.019947509765625
+real kept ratio: 0.02011767578125
 shape of ref_O: torch.Size([4, 32, 1, 256])
 shape of tri_O: torch.Size([4, 32, 1, 256])
 Number of NaNs in triton_O: 0
 Ratio of NaNs in triton_O: 0.0
-Max absolute values - ref: 0.08306884765625  tri: 0.08306884765625
+shape of ref_O_by_mask: torch.Size([4, 32, 1, 256])
+Max absolute values - ref: 0.0885009765625  tri: 0.0885009765625
 Max absolute difference: 6.103515625e-05
 Benchmarking reference implementation...
-Reference implementation: 33.460 ms
+Reference implementation: 288.600 ms
+Benchmarking naive_by_mask implementation...
+Reference by mask implementation: 39.588 ms
 Benchmarking Triton implementation...
-Triton implementation: 0.407 ms
-Speedup: 82.137x
+Triton implementation: 0.462 ms
+Speedup over reference: 624.374x
+Speedup over reference by mask: 85.647x
 ```
-
