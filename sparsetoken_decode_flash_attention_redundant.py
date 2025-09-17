@@ -243,8 +243,8 @@ def test_op_decode_sparsetoken(GQA_group_size = 4, dtype=torch.float16):
     # Test parameters
     num_kv_heads = 8
     num_qo_heads = num_kv_heads * GQA_group_size
-    head_dim = 256
-    BATCH_SIZE = 4
+    head_dim = 128
+    BATCH_SIZE = 1
     SEQ_LEN = 32000
 
     q = (
@@ -365,22 +365,22 @@ Test on NVIDIA RTX 5000 Ada Generation
 
 Output:
 ```
->> q: torch.Size([4, 32, 1, 256]), K: torch.Size([4, 8, 32000, 256]), V: torch.Size([4, 8, 32000, 256]), GQA_group_size: 4
-real kept ratio: 0.02011767578125
-shape of ref_O: torch.Size([4, 32, 1, 256])
-shape of tri_O: torch.Size([4, 32, 1, 256])
+>> q: torch.Size([1, 32, 1, 128]), K: torch.Size([1, 8, 32000, 128]), V: torch.Size([1, 8, 32000, 128]), GQA_group_size: 4
+real kept ratio: 0.019923828125
+shape of ref_O: torch.Size([1, 32, 1, 128])
+shape of tri_O: torch.Size([1, 32, 1, 128])
 Number of NaNs in triton_O: 0
 Ratio of NaNs in triton_O: 0.0
-shape of ref_O_by_mask: torch.Size([4, 32, 1, 256])
-Max absolute values - ref: 0.0885009765625  tri: 0.0885009765625
-Max absolute difference: 6.103515625e-05
+shape of ref_O_by_mask: torch.Size([1, 32, 1, 128])
+Max absolute values - ref: 0.07025146484375  tri: 0.07025146484375
+Max absolute difference: 3.0517578125e-05
 Benchmarking reference implementation...
-Reference implementation: 288.600 ms
+Reference implementation: 4.111 ms
 Benchmarking naive_by_mask implementation...
-Reference by mask implementation: 39.588 ms
+Reference by mask implementation: 2.412 ms
 Benchmarking Triton implementation...
-Triton implementation: 0.462 ms
-Speedup over reference: 624.374x
-Speedup over reference by mask: 85.647x
+Triton implementation: 0.057 ms
+Speedup over reference: 71.995x
+Speedup over reference by mask: 42.236x
 ```
 '''
