@@ -1,4 +1,6 @@
 import torch
+import torch_npu
+DEVICE_STR = "npu"
 import triton
 import triton.language as tl
 import triton.testing
@@ -60,7 +62,7 @@ def inner_kernel(
         seq_lo, seq_hi = 0, SEQ_LEN
 
     V_block_ptr = tl.advance(V_block_ptr, (seq_lo, 0))
-    K_block_ptr = tl.advance(K_block_ptr, (0, seq_lo))
+    K_block_ptr = tl.advance(K_block_ptr, (seq_lo, 0))
 
     # loop K V by KV_SEQ_BLOCK_SIZE
     for start_kv in range(seq_lo, seq_hi, KV_SEQ_BLOCK_SIZE):
@@ -68,7 +70,10 @@ def inner_kernel(
 
         # compute q@k
         K_block = tl.load(K_block_ptr)
-        QK_block = tl.dot(Q_block, K_block)
+        # load 出来是 (KV_SEQ_BLOCK_SIZE, HEAD_DIM) 因为我们用 order=(1,0)
+        # 需要转置为 (HEAD_DIM, KV_SEQ_BLOCK_SIZE) 以便与 Q_block 做 matmul
+
+        QK_block = tl.dot(Q_block, tl.trans(K_block))
 
         # handle causal
         if STAGE == 2:
@@ -100,7 +105,7 @@ def inner_kernel(
 
         # advance the loop
         V_block_ptr = tl.advance(V_block_ptr, (KV_SEQ_BLOCK_SIZE, 0))
-        K_block_ptr = tl.advance(K_block_ptr, (0, KV_SEQ_BLOCK_SIZE))
+        K_block_ptr = tl.advance(K_block_ptr, (KV_SEQ_BLOCK_SIZE, 0))
 
     return tmp_O_block, tmp_m_i, tmp_l_i
 
@@ -209,20 +214,21 @@ def flash_attention_kernel(
         order = (1, 0),
     )
 
-    # K block
+    # K block  — 兼容 order=(1,0)
     K_block_ptr = tl.make_block_ptr(
         base = K_ptr + kv_offset,
-        shape = (HEAD_DIM, SEQ_LEN),
+        # treat K as (SEQ_LEN, HEAD_DIM) so order=(1,0) makes sense
+        shape = (SEQ_LEN, HEAD_DIM),
         strides = (
-            stride_K_dim,
-            stride_K_seq, 
-            ),
-        # 
-        block_shape = (HEAD_DIM, KV_SEQ_BLOCK_SIZE),
+            stride_K_seq,   # seq stride first
+            stride_K_dim,   # then head dim stride
+        ),
+        # block is (KV_SEQ_BLOCK_SIZE, HEAD_DIM)
+        block_shape = (KV_SEQ_BLOCK_SIZE, HEAD_DIM),
         offsets = (0, 0),
-        # 
-        order = (0, 1),
+        order = (1, 0),
     )
+
 
     # V block
     V_block_ptr = tl.make_block_ptr(
@@ -388,21 +394,21 @@ def test_op(BATCH_SIZE, NUM_HEADS_KV, SEQ_LEN, HEAD_DIM, causal, GQA_group_size 
         torch.empty(
             (BATCH_SIZE, NUM_HEADS_KV*GQA_group_size, SEQ_LEN, HEAD_DIM),
             dtype=dtype,
-            device="cuda"
+            device=DEVICE_STR
         ).normal_(mean=0, std=0.5)
     )
     K = (
         torch.empty(
             (BATCH_SIZE, NUM_HEADS_KV, SEQ_LEN, HEAD_DIM),
             dtype=dtype,
-            device="cuda"
+            device=DEVICE_STR
         ).normal_(mean=0, std=0.5)
     )
     V = (
         torch.empty(
             (BATCH_SIZE, NUM_HEADS_KV, SEQ_LEN, HEAD_DIM),
             dtype=dtype,
-            device="cuda"
+            device=DEVICE_STR
         ).normal_(mean=0, std=0.5)
     )
 
@@ -413,7 +419,7 @@ def test_op(BATCH_SIZE, NUM_HEADS_KV, SEQ_LEN, HEAD_DIM, causal, GQA_group_size 
 
     # reference implementation
     def reference_implementation(Q, K, V, causal, softmax_scale, GQA_group_size):
-        MASK = torch.tril(torch.ones((SEQ_LEN, SEQ_LEN), device="cuda")) if causal else None
+        MASK = torch.tril(torch.ones((SEQ_LEN, SEQ_LEN), device=DEVICE_STR)) if causal else None
         if GQA_group_size > 1:
             K = K.repeat_interleave(GQA_group_size, dim=1)
             V = V.repeat_interleave(GQA_group_size, dim=1)
@@ -469,16 +475,14 @@ if __name__ == "__main__":
     )
 
 
-'''
-Test on NVIDIA RTX 5000 Ada Generation
+''' 
+Test on HUAWEI Ascend 910B2
 
-Output:
-```
 >> Q: torch.Size([8, 64, 1024, 64]), K: torch.Size([8, 16, 1024, 64]), V: torch.Size([8, 16, 1024, 64]), causal: True, GQA_group_size: 4
 Benchmarking reference implementation...
-Reference implementation: 35.219 ms
+Reference implementation: 25.782 ms
 Benchmarking Triton implementation...
-Triton implementation: 0.780 ms
-Speedup: 45.180x
-```
+Triton implementation: 57.896 ms
+Speedup: 0.445x
+
 '''
