@@ -1,4 +1,6 @@
 import torch
+import torch_npu
+DEVICE_STR = "npu"
 import triton
 import triton.language as tl
 import os
@@ -31,7 +33,7 @@ def inner_kernel(
     seq_lo, seq_hi = 0, SEQ_LEN
 
     V_block_ptr = tl.advance(V_block_ptr, (seq_lo, 0))
-    K_block_ptr = tl.advance(K_block_ptr, (0, seq_lo))
+    K_block_ptr = tl.advance(K_block_ptr, (seq_lo, 0))
 
     # loop K V by KV_SEQ_BLOCK_SIZE
     for start_kv in range(seq_lo, seq_hi, KV_SEQ_BLOCK_SIZE):
@@ -39,7 +41,7 @@ def inner_kernel(
 
         # compute q@k
         K_block = tl.load(K_block_ptr)
-        QK_block = tl.dot(Q_block, K_block)
+        QK_block = tl.dot(Q_block, tl.trans(K_block))
 
         m_ij = tl.maximum(tmp_m_i, tl.max(QK_block, axis=1) * softmax_scale )
         QK_block = QK_block * softmax_scale - m_ij[:, None]
@@ -63,7 +65,7 @@ def inner_kernel(
 
         # advance the loop
         V_block_ptr = tl.advance(V_block_ptr, (KV_SEQ_BLOCK_SIZE, 0))
-        K_block_ptr = tl.advance(K_block_ptr, (0, KV_SEQ_BLOCK_SIZE))
+        K_block_ptr = tl.advance(K_block_ptr, (KV_SEQ_BLOCK_SIZE, 0))
 
     return tmp_O_block, tmp_m_i, tmp_l_i
 
@@ -158,16 +160,16 @@ def flash_attention_kernel(
     # K block
     K_block_ptr = tl.make_block_ptr(
         base = K_ptr + kv_offset,
-        shape = (HEAD_DIM, SEQ_LEN),
+        shape = (SEQ_LEN, HEAD_DIM),
         strides = (
-            stride_K_dim,
-            stride_K_seq, 
+            stride_K_seq,
+            stride_K_dim, 
             ),
         # 
-        block_shape = (HEAD_DIM, KV_SEQ_BLOCK_SIZE),
+        block_shape = (KV_SEQ_BLOCK_SIZE, HEAD_DIM),
         offsets = (0, 0),
         # 
-        order = (0, 1),
+        order = (1, 0),
     )
 
     # V block
@@ -279,21 +281,21 @@ def test_op_decode(BATCH_SIZE, NUM_HEADS_KV, SEQ_LEN, HEAD_DIM, GQA_group_size =
         torch.empty(
             (BATCH_SIZE, NUM_HEADS_KV*GQA_group_size, 1, HEAD_DIM),
             dtype=dtype,
-            device="cuda"
+            device=DEVICE_STR
         ).normal_(mean=0, std=0.5)
     )
     K = (
         torch.empty(
             (BATCH_SIZE, NUM_HEADS_KV, SEQ_LEN, HEAD_DIM),
             dtype=dtype,
-            device="cuda"
+            device=DEVICE_STR
         ).normal_(mean=0, std=0.5)
     )
     V = (
         torch.empty(
             (BATCH_SIZE, NUM_HEADS_KV, SEQ_LEN, HEAD_DIM),
             dtype=dtype,
-            device="cuda"
+            device=DEVICE_STR
         ).normal_(mean=0, std=0.5)
     )
 
@@ -363,9 +365,10 @@ Output:
  shape of ref: torch.Size([8, 64, 1, 64])
  shape of tri: torch.Size([8, 64, 1, 64])
 Benchmarking reference implementation...
-Reference implementation: 0.692 ms
+Reference implementation: 0.297 ms
 Benchmarking Triton implementation...
-Triton implementation: 0.102 ms
-Speedup: 6.812x
+Triton implementation: 1.469 ms
+Speedup: 0.202x
 ```
 '''
+

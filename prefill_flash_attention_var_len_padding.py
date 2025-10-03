@@ -1,4 +1,6 @@
 import torch
+import torch_npu
+DEVICE_STR = "npu"
 import triton
 import triton.language as tl
 import triton.testing
@@ -6,7 +8,7 @@ import os
 
 '''
 This kernel's case:
-- The inputs in this batch have the same sequence length. 
+- The inputs in this batch have different sequence lengths. 
 - They all start from the first token.
 - Support causal and non-causal attention.
 - Only support forward for inference.
@@ -60,7 +62,7 @@ def inner_kernel(
         seq_lo, seq_hi = 0, SEQ_LEN
 
     V_block_ptr = tl.advance(V_block_ptr, (seq_lo, 0))
-    K_block_ptr = tl.advance(K_block_ptr, (0, seq_lo))
+    K_block_ptr = tl.advance(K_block_ptr, (seq_lo, 0)) # MODIFIED
 
     # loop K V by KV_SEQ_BLOCK_SIZE
     for start_kv in range(seq_lo, seq_hi, KV_SEQ_BLOCK_SIZE):
@@ -68,7 +70,7 @@ def inner_kernel(
 
         # compute q@k
         K_block = tl.load(K_block_ptr)
-        QK_block = tl.dot(Q_block, K_block)
+        QK_block = tl.dot(Q_block, tl.trans(K_block)) # MODIFIED
 
         # handle causal
         if STAGE == 2:
@@ -100,7 +102,7 @@ def inner_kernel(
 
         # advance the loop
         V_block_ptr = tl.advance(V_block_ptr, (KV_SEQ_BLOCK_SIZE, 0))
-        K_block_ptr = tl.advance(K_block_ptr, (0, KV_SEQ_BLOCK_SIZE))
+        K_block_ptr = tl.advance(K_block_ptr, (KV_SEQ_BLOCK_SIZE, 0)) # MODIFIED
 
     return tmp_O_block, tmp_m_i, tmp_l_i
 
@@ -217,16 +219,16 @@ def flash_attention_kernel(
         # K block
         K_block_ptr = tl.make_block_ptr(
             base = K_ptr + kv_offset,
-            shape = (HEAD_DIM, SEQ_LEN),
+            shape = (SEQ_LEN, HEAD_DIM), # MODIFIED
             strides = (
-                stride_K_dim,
-                stride_K_seq, 
+                stride_K_seq, # MODIFIED
+                stride_K_dim, 
                 ),
             # 
-            block_shape = (HEAD_DIM, KV_SEQ_BLOCK_SIZE),
+            block_shape = (KV_SEQ_BLOCK_SIZE, HEAD_DIM), # MODIFIED: shape of the block, not the tensor
             offsets = (0, 0),
             # 
-            order = (0, 1),
+            order = (1, 0), # MODIFIED
         )
 
         # V block
@@ -366,6 +368,11 @@ def flash_attention_prefill(Q, K, V, causal, softmax_scale, GQA_group_size=1, va
         1,
     )
     # The diference of var len is to skip some computation in the second dimension of grid.
+    
+    # if varlen is None, create a tensor of max length
+    if varlen is None:
+        varlen = torch.full((B,), S, dtype=torch.int32, device=Q.device)
+
 
     flash_attention_kernel[grid](
         Q,
@@ -396,26 +403,26 @@ def test_op_var_len_padding(BATCH_SIZE, NUM_HEADS_KV, SEQ_LEN, HEAD_DIM, causal,
         torch.empty(
             (BATCH_SIZE, NUM_HEADS_KV*GQA_group_size, SEQ_LEN, HEAD_DIM),
             dtype=dtype,
-            device="cuda"
+            device=DEVICE_STR # MODIFIED
         ).normal_(mean=0, std=0.5)
     )
     K = (
         torch.empty(
             (BATCH_SIZE, NUM_HEADS_KV, SEQ_LEN, HEAD_DIM),
             dtype=dtype,
-            device="cuda"
+            device=DEVICE_STR # MODIFIED
         ).normal_(mean=0, std=0.5)
     )
     V = (
         torch.empty(
             (BATCH_SIZE, NUM_HEADS_KV, SEQ_LEN, HEAD_DIM),
             dtype=dtype,
-            device="cuda"
+            device=DEVICE_STR # MODIFIED
         ).normal_(mean=0, std=0.5)
     )
 
     # generate random lengths for each sequence in the batch
-    Ls = torch.randint(low=1, high=SEQ_LEN + 1, size=(BATCH_SIZE,), device="cuda")
+    Ls = torch.randint(low=1, high=SEQ_LEN + 1, size=(BATCH_SIZE,), device=DEVICE_STR) # MODIFIED
     Ls[0] = SEQ_LEN  # ensure at least one sequence has max length for better benchmarking
     print(f">> Lengths: {Ls}")
 
@@ -426,7 +433,7 @@ def test_op_var_len_padding(BATCH_SIZE, NUM_HEADS_KV, SEQ_LEN, HEAD_DIM, causal,
 
     # reference implementation
     def reference_implementation(Q, K, V, causal, softmax_scale, GQA_group_size):
-        MASK = torch.tril(torch.ones((SEQ_LEN, SEQ_LEN), device="cuda")) if causal else None
+        MASK = torch.tril(torch.ones((SEQ_LEN, SEQ_LEN), device=DEVICE_STR)) if causal else None # MODIFIED
         if GQA_group_size > 1:
             K = K.repeat_interleave(GQA_group_size, dim=1)
             V = V.repeat_interleave(GQA_group_size, dim=1)
@@ -487,16 +494,16 @@ if __name__ == "__main__":
 
 
 '''
-Test on NVIDIA RTX 5000 Ada Generation
+Test on HUAWEI Ascend 910B2
 
 Output:
 ```
->> Lengths: tensor([1024,  468,  631,  258,  353,  599,  732,   94], device='cuda:0')
+>> Lengths: tensor([1024,  875,   72, 1010,  212,  669,   61,  823], device='npu:0')
 >> Q: torch.Size([8, 64, 1024, 64]), K: torch.Size([8, 16, 1024, 64]), V: torch.Size([8, 16, 1024, 64]), causal: True, GQA_group_size: 4
 Benchmarking reference implementation...
-Reference implementation: 75.014 ms
+Reference implementation: 25.727 ms
 Benchmarking Triton implementation...
-Triton implementation: 0.596 ms
-Speedup: 125.807x
+Triton implementation: 31.128 ms
+Speedup: 0.826x
 ```
 '''

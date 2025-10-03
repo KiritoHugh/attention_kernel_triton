@@ -100,3 +100,20 @@ Triton implementation: 0.057 ms
 Speedup over reference: 71.995x
 Speedup over reference by mask: 42.236x
 ```
+
+
+# Adaptation to HUAWEI Ascend 910B2
+
+
+1. Change the order for K block_ptr from (0,1) to (1,0).
+[DONE]
+prefill_flash_attention.py
+prefill_flash_attention_var_len_padding.py
+decode_flash_attention_redundant.py
+
+
+2. global varible not support so remove it.
+[TODO]
+decode_flash_attention_redundant_var_len_paged.py
+sparsetoken_decode_flash_attention_redundant.py
+sparsetoken_decode_flash_attention_redundant_var_len_paged.py
