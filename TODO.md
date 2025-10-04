@@ -1,5 +1,8 @@
 
-- [ ] Adapt `sparsetoken_decode_flash_attention_redundant_var_len_paged.py` to support attention with norm in MagicPIG
+- [x] Adapt `sparsetoken_decode_flash_attention_redundant_var_len_paged.py` to support attention with norm in MagicPIG
+
+new file: `magicpig_sparsetoken_decode_flash_attention_redundant_var_len_paged_with_norm.py`
+
 ![attention_with_norm](asset/attention_with_norm.png)
 
 > u的shape和attention mask的shape一样
