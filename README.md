@@ -115,5 +115,10 @@ decode_flash_attention_redundant.py
 2. global varible not support so remove it.
 [TODO]
 decode_flash_attention_redundant_var_len_paged.py
+- `for i in range(num_pages):` can not pass tirton compilation ...
+ hard code to `for i in range(1):` can pass test,
+ `for i in range(2):` can not pass compilation.
+ try `for i in range(some tl.constexpr)` ?
+
 sparsetoken_decode_flash_attention_redundant.py
 sparsetoken_decode_flash_attention_redundant_var_len_paged.py
