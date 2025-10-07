@@ -120,5 +120,7 @@ decode_flash_attention_redundant_var_len_paged.py
  `for i in range(2):` can not pass compilation.
  try `for i in range(some tl.constexpr)` ?
 
+- 现在这个地方给我的感觉是，不管是for和if都用不了。 for的话只能for in range(1)，更大的数或者变量都会编译报错。if的话结果始终是错的，即使逻辑不改变，比如 i=0, if i<num_pages 结果算出的来是错的。
+
 sparsetoken_decode_flash_attention_redundant.py
 sparsetoken_decode_flash_attention_redundant_var_len_paged.py
