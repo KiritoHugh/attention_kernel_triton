@@ -168,72 +168,18 @@ def flash_attention_paged_kernel(
     # not yet handle num_pages == 0 case
     # for i in range(num_pages):
 
-    # #try1 (for loop): failed
-    # for page_i in range(num_pages):
+    #try1 (for loop): failed, can't compile
+    for page_i in range(num_pages):
 
-    #try2 (unroll loop use if): failed, result incorrect
-    page_i = -1
+    # #try2 (unroll loop use if, copy many times): failed, result incorrect
+    # page_i = -1
     # if page_i < num_pages - 1:
     #     page_i += 1
 
-    # # if hard code for page_num all equals 1 case, that's ok. but can not handle other page_num
-    if True:
-        page_i += 1
-
-        page_idx = tl.load(kv_page_indices_ptr + indptr_start + page_i)
-        last_page_len = 0
-        if page_i == num_pages - 1:
-            last_page_len = tl.load(kv_last_page_len_ptr + out_batch_id)
-        else:
-            last_page_len = page_size
-
-        # move offset for k, v from paged_kv_cache
-        k_ptr_offset = page_idx * stride_paged_kv_cache_B + kv_head_id * stride_paged_kv_cache_H
-        v_ptr_offset = page_idx * stride_paged_kv_cache_B + stride_paged_kv_cache_2 + kv_head_id * stride_paged_kv_cache_H
-
-        # NPU change: Modify K_block_ptr to use order=(1,0)
-        K_block_ptr = tl.make_block_ptr(
-            base = paged_kv_cache_ptr + k_ptr_offset,
-            shape = (page_size, HEAD_DIM),
-            strides = (
-                stride_paged_kv_cache_page,
-                stride_paged_kv_cache_D,
-                ),
-            block_shape = (KV_SEQ_BLOCK_SIZE, HEAD_DIM),
-            offsets = (0, 0),
-            order = (1, 0),
-        )
-        V_block_ptr = tl.make_block_ptr(
-            base = paged_kv_cache_ptr + v_ptr_offset,
-            shape = (page_size, HEAD_DIM),
-            strides = (
-                stride_paged_kv_cache_page, 
-                stride_paged_kv_cache_D),
-            # 
-            block_shape = (KV_SEQ_BLOCK_SIZE, HEAD_DIM),
-            offsets = (0, 0),
-            # 
-            order = (1, 0),
-        )
-
-
-
-        # call programs 
-        tmp_O_block, tmp_m_i, tmp_l_i = inner_kernel(
-            q_block,
-            K_block_ptr,
-            V_block_ptr,
-            KV_SEQ_BLOCK_SIZE,
-            tmp_O_block,
-            tmp_m_i,
-            tmp_l_i,
-            last_page_len,
-            softmax_scale,
-            KV_ranges,
-        )
-
-    if True:
-        page_i += 1
+    # #if hard code for page_num all equals 1 case, that's ok. but can not handle other page_num
+    # page_i = -1
+    # if True:
+    #     page_i += 1
 
         page_idx = tl.load(kv_page_indices_ptr + indptr_start + page_i)
         last_page_len = 0
@@ -420,16 +366,16 @@ def test_op_decode_paged(GQA_group_size = 2, dtype=torch.float16):
     
     # Create metadata
     batch_size = 4
-    # kv_page_indptr = torch.tensor([0, 1, 2, 3, 4], dtype=torch.int32, device=device)  # 
-    kv_page_indptr = torch.tensor([0, 2, 4, 6, 8], dtype=torch.int32, device=device)  # 
+    kv_page_indptr = torch.tensor([0, 1, 2, 3, 4], dtype=torch.int32, device=device)  # 
+    # kv_page_indptr = torch.tensor([0, 2, 4, 6, 8], dtype=torch.int32, device=device)  # 
     kv_page_indices = torch.tensor([0, 
                                     1, 
                                     2,
                                     3,
-                                    4,
-                                    5,
-                                    6,
-                                    7
+                                    # 4,
+                                    # 5,
+                                    # 6,
+                                    # 7
                                     ], dtype=torch.int32, device=device)
     kv_last_page_len = torch.tensor([61, 62, 63, 64], dtype=torch.int32, device=device)  # 
 
