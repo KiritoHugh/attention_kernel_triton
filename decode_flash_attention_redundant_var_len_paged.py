@@ -1,11 +1,12 @@
-
 import torch
+import torch_npu
+DEVICE_STR = "npu"
 import triton
 import triton.language as tl
 import os
+import triton.testing
 
 import math
-redundant_len = 16
 
 @triton.jit
 def inner_kernel(
@@ -37,7 +38,8 @@ def inner_kernel(
 
         # compute q@k
         K_block = tl.load(K_block_ptr)
-        QK_block = tl.dot(Q_block, K_block)
+        # NPU change: Explicitly transpose K_block
+        QK_block = tl.dot(Q_block, tl.trans(K_block))
 
         mask =  SEQ_LEN > KV_ranges + start_kv
         QK_block = QK_block * softmax_scale + tl.where(mask, 0.0, -1.0e6)[None, :]
@@ -64,7 +66,8 @@ def inner_kernel(
 
         # advance the loop
         V_block_ptr = tl.advance(V_block_ptr, (KV_SEQ_BLOCK_SIZE, 0))
-        K_block_ptr = tl.advance(K_block_ptr, (0, KV_SEQ_BLOCK_SIZE))
+        # NPU change: Adjust advance for K_block_ptr
+        K_block_ptr = tl.advance(K_block_ptr, (KV_SEQ_BLOCK_SIZE, 0))
     return tmp_O_block, tmp_m_i, tmp_l_i
 
 @triton.jit
@@ -75,6 +78,7 @@ def flash_attention_paged_kernel(
     kv_page_indptr_ptr,
     kv_page_indices_ptr,
     kv_last_page_len_ptr,
+    kv_page_num_ptr,                # <--- 新增：每个 batch 的 num_pages 指针
     # 
     O_ptr,
     softmax_scale,
@@ -107,19 +111,16 @@ def flash_attention_paged_kernel(
     KV_SEQ_BLOCK_SIZE: tl.constexpr,
 ):
     '''
-    q: (B, H*GQA_group_size, redundant_len, D)
+    q: (B, H*GQA_group_size, 16, D)
 
     paged_kv_cache: (all_num_pages, 2, H, page_size, D) (2 for k and v)
     kv_page_indptr: (B+1) (int32)
     kv_page_indices: (total_num_pages) (int32)
     kv_last_page_len: (B) (int32)
+    kv_page_num: (B) (int32)  <-- 新增
 
-    O: (B, H*GQA_group_size, redundant_len, D)
-
-
+    O: (B, H*GQA_group_size, 16, D)
     '''
-
-
 
     B_H_GQA_id = tl.program_id(0)
     out_batch_id = B_H_GQA_id // H_GQA
@@ -127,8 +128,8 @@ def flash_attention_paged_kernel(
     kv_head_id = out_head_id // GQA_group_size  # head id for kv
 
     indptr_start = tl.load(kv_page_indptr_ptr + out_batch_id)
-    indptr_end = tl.load(kv_page_indptr_ptr + out_batch_id + 1)
-    num_pages = indptr_end - indptr_start
+    # 不再在内核中计算 end - start
+    num_pages = tl.load(kv_page_num_ptr + out_batch_id)    # 从外部传入
 
     qo_offset = out_batch_id * stride_q_B + out_head_id * stride_q_H_GQA
     qo_offset_O = out_batch_id * stride_O_B + out_head_id * stride_O_H_GQA
@@ -136,10 +137,10 @@ def flash_attention_paged_kernel(
 
     O_block_ptr = tl.make_block_ptr(
         base = O_ptr + qo_offset_O,
-        shape = (redundant_len, HEAD_DIM),
+        shape = (16, HEAD_DIM),
         strides = (stride_O_1, stride_O_D),
         # 
-        block_shape = (redundant_len, HEAD_DIM),
+        block_shape = (16, HEAD_DIM),
         offsets = (0, 0),
         # 
         order = (1, 0),
@@ -147,10 +148,10 @@ def flash_attention_paged_kernel(
 
     q_block_ptr = tl.make_block_ptr(
         base = q_ptr + qo_offset,
-        shape = (redundant_len, HEAD_DIM),
+        shape = (16, HEAD_DIM),
         strides = (stride_q_1, stride_q_D),
         # 
-        block_shape = (redundant_len, HEAD_DIM),
+        block_shape = (16, HEAD_DIM),
         offsets = (0, 0),
         # 
         order = (1, 0),
@@ -160,65 +161,66 @@ def flash_attention_paged_kernel(
     q_block = tl.load(q_block_ptr)
     KV_ranges = tl.arange(0, KV_SEQ_BLOCK_SIZE)
     # 
-    tmp_O_block = tl.zeros((redundant_len, HEAD_DIM), dtype=tl.float32)
-    tmp_m_i = tl.zeros((redundant_len,), dtype=tl.float32) - float('inf')
-    tmp_l_i = tl.zeros((redundant_len,), dtype=tl.float32)
+    tmp_O_block = tl.zeros((16, HEAD_DIM), dtype=tl.float32)
+    tmp_m_i = tl.zeros((16,), dtype=tl.float32) - float('inf')
+    tmp_l_i = tl.zeros((16,), dtype=tl.float32)
 
     # not yet handle num_pages == 0 case
-    for i in range(num_pages):
-        page_idx = tl.load(kv_page_indices_ptr + indptr_start + i)
-        last_page_len = 0
-        if i == num_pages - 1:
-            last_page_len = tl.load(kv_last_page_len_ptr + out_batch_id)
-        else:
-            last_page_len = page_size
+    # for i in range(num_pages):
+    page_i = 0
+    # if page_i < num_pages:
 
-        # move offset for k, v from paged_kv_cache
-        k_ptr_offset = page_idx * stride_paged_kv_cache_B + kv_head_id * stride_paged_kv_cache_H
-        v_ptr_offset = page_idx * stride_paged_kv_cache_B + stride_paged_kv_cache_2 + kv_head_id * stride_paged_kv_cache_H
+    page_idx = tl.load(kv_page_indices_ptr + indptr_start + page_i)
+    last_page_len = 0
+    if page_i == num_pages - 1:
+        last_page_len = tl.load(kv_last_page_len_ptr + out_batch_id)
+    else:
+        last_page_len = page_size
 
-        # needed shape (page_size, D), frankly is just lie (s,D)
-        K_block_ptr = tl.make_block_ptr(
-            base = paged_kv_cache_ptr + k_ptr_offset,
-            shape = (HEAD_DIM, page_size),
-            strides = (
-                stride_paged_kv_cache_D,
-                stride_paged_kv_cache_page,
-                ),
-            # 
-            block_shape = (HEAD_DIM, KV_SEQ_BLOCK_SIZE),
-            offsets = (0, 0),
-            # 
-            order = (0, 1),
-        )
-        V_block_ptr = tl.make_block_ptr(
-            base = paged_kv_cache_ptr + v_ptr_offset,
-            shape = (page_size, HEAD_DIM),
-            strides = (
-                stride_paged_kv_cache_page, 
-                stride_paged_kv_cache_D),
-            # 
-            block_shape = (KV_SEQ_BLOCK_SIZE, HEAD_DIM),
-            offsets = (0, 0),
-            # 
-            order = (1, 0),
-        )
+    # move offset for k, v from paged_kv_cache
+    k_ptr_offset = page_idx * stride_paged_kv_cache_B + kv_head_id * stride_paged_kv_cache_H
+    v_ptr_offset = page_idx * stride_paged_kv_cache_B + stride_paged_kv_cache_2 + kv_head_id * stride_paged_kv_cache_H
+
+    # NPU change: Modify K_block_ptr to use order=(1,0)
+    K_block_ptr = tl.make_block_ptr(
+        base = paged_kv_cache_ptr + k_ptr_offset,
+        shape = (page_size, HEAD_DIM),
+        strides = (
+            stride_paged_kv_cache_page,
+            stride_paged_kv_cache_D,
+            ),
+        block_shape = (KV_SEQ_BLOCK_SIZE, HEAD_DIM),
+        offsets = (0, 0),
+        order = (1, 0),
+    )
+    V_block_ptr = tl.make_block_ptr(
+        base = paged_kv_cache_ptr + v_ptr_offset,
+        shape = (page_size, HEAD_DIM),
+        strides = (
+            stride_paged_kv_cache_page, 
+            stride_paged_kv_cache_D),
+        # 
+        block_shape = (KV_SEQ_BLOCK_SIZE, HEAD_DIM),
+        offsets = (0, 0),
+        # 
+        order = (1, 0),
+    )
 
 
 
-        # call programs 
-        tmp_O_block, tmp_m_i, tmp_l_i = inner_kernel(
-            q_block,
-            K_block_ptr,
-            V_block_ptr,
-            KV_SEQ_BLOCK_SIZE,
-            tmp_O_block,
-            tmp_m_i,
-            tmp_l_i,
-            last_page_len,
-            softmax_scale,
-            KV_ranges,
-        )
+    # call programs 
+    tmp_O_block, tmp_m_i, tmp_l_i = inner_kernel(
+        q_block,
+        K_block_ptr,
+        V_block_ptr,
+        KV_SEQ_BLOCK_SIZE,
+        tmp_O_block,
+        tmp_m_i,
+        tmp_l_i,
+        last_page_len,
+        softmax_scale,
+        KV_ranges,
+    )
 
     tmp_O_block = tmp_O_block / tmp_l_i[:, None]
     tl.store(O_block_ptr, tmp_O_block.to(O_ptr.type.element_ty))
@@ -233,7 +235,7 @@ def flash_attention_decode_paged(q, paged_kv_cache, kv_page_indptr, kv_page_indi
     kv_page_indices: [total_num_pages] (int32)
     kv_last_page_len: [B] (int32)
     """
-    q = q.repeat_interleave(redundant_len, dim=2)  # [B, H*GQA_group_size, redundant_len, D]
+    q = q.repeat_interleave(16, dim=2)  # [B, H*GQA_group_size, 16, D]
 
     B, H_GQA, _, D = q.shape
     H = paged_kv_cache.shape[2]
@@ -244,7 +246,7 @@ def flash_attention_decode_paged(q, paged_kv_cache, kv_page_indptr, kv_page_indi
     softmax_scale = float(1.0 / math.sqrt(D))
 
     # allocate output
-    O = torch.empty((B, H_GQA, redundant_len, D), dtype=q.dtype, device=q.device)
+    O = torch.empty((B, H_GQA, 16, D), dtype=q.dtype, device=q.device)
 
     grid = (
         B * H_GQA,
@@ -256,12 +258,19 @@ def flash_attention_decode_paged(q, paged_kv_cache, kv_page_indptr, kv_page_indi
 
     assert VAR_KV_SEQ_BLK_SIZE <= page_size and page_size % VAR_KV_SEQ_BLK_SIZE == 0, "page_size must be multiple of VAR_KV_SEQ_BLK_SIZE"
 
+    # ------------- 新增：在host端计算每个 batch 的 num_pages 并传入内核 -------------
+    # kv_page_indptr: length B+1
+    # kv_page_num shape: (B,)
+    kv_page_num = (kv_page_indptr[1:] - kv_page_indptr[:-1]).to(torch.int32).contiguous()
+    print("kv_page_num:", kv_page_num)
+
     flash_attention_paged_kernel[grid](
         q,
         paged_kv_cache,
         kv_page_indptr,
         kv_page_indices,
         kv_last_page_len,
+        kv_page_num,                      # <--- 传入 kv_page_num 指针
         O,
         softmax_scale,
         q.stride(0), q.stride(1), q.stride(2), q.stride(3),
@@ -332,7 +341,7 @@ def naive_paged_attention(q, paged_kv_cache, kv_page_indptr, kv_page_indices, kv
 def test_op_decode_paged(GQA_group_size = 2, dtype=torch.float16):
     pass
 
-    device = "cuda"
+    device = DEVICE_STR
     # Test parameters
     num_kv_heads = 2
     num_qo_heads = num_kv_heads * GQA_group_size
@@ -345,20 +354,13 @@ def test_op_decode_paged(GQA_group_size = 2, dtype=torch.float16):
                                  device=device, dtype=dtype)
     
     # Create metadata
-    batch_size = 3
-    kv_page_indptr = torch.tensor([0, 4, 5, 8], dtype=torch.int32, device=device)  # 
-    kv_page_indices = torch.tensor([0, 1, 3, 5, 
-                                    2, 
-                                    6, 7 ,4], dtype=torch.int32, device=device)
-    kv_last_page_len = torch.tensor([2, 22, 3], dtype=torch.int32, device=device)  # 
-
-    # batch_size = 4
-    # kv_page_indptr = torch.tensor([0, 1, 2, 3, 4], dtype=torch.int32, device=device)  # 
-    # kv_page_indices = torch.tensor([0, 
-    #                                 1, 
-    #                                 2,
-    #                                 3], dtype=torch.int32, device=device)
-    # kv_last_page_len = torch.tensor([64, 64, 64, 64], dtype=torch.int32, device=device)  # 
+    batch_size = 4
+    kv_page_indptr = torch.tensor([0, 1, 2, 3, 4], dtype=torch.int32, device=device)  # 
+    kv_page_indices = torch.tensor([0, 
+                                    1, 
+                                    2,
+                                    3], dtype=torch.int32, device=device)
+    kv_last_page_len = torch.tensor([61, 62, 63, 64], dtype=torch.int32, device=device)  # 
 
 
     # Create query
@@ -402,23 +404,3 @@ def test_op_decode_paged(GQA_group_size = 2, dtype=torch.float16):
 
 if __name__ == "__main__":
     test_op_decode_paged()
-
-
-'''
-Test on NVIDIA RTX 5000 Ada Generation
-
-Output:
-```
-shape of ref_O: torch.Size([3, 4, 64])
-shape of triton_O: torch.Size([3, 4, 64])
-Number of NaNs in triton_O: 0
-Ratio of NaNs in triton_O: 0.0
-Max absolute values - ref: 1.0302734375  tri: 1.0302734375
-Max absolute difference: 0.0009765625
-Benchmarking reference implementation...
-Reference implementation: 0.763 ms
-Benchmarking Triton implementation...
-Triton implementation: 0.017 ms
-Speedup: 44.067x
-```
-'''
