@@ -177,7 +177,7 @@ def flash_attention_paged_kernel(
     #     page_i += 1
 
     # # if hard code for page_num all equals 1 case, that's ok. but can not handle other page_num
-    if page_i < num_pages - 1:
+    if True:
         page_i += 1
 
         page_idx = tl.load(kv_page_indices_ptr + indptr_start + page_i)
@@ -232,7 +232,7 @@ def flash_attention_paged_kernel(
             KV_ranges,
         )
 
-    if page_i < num_pages - 1:
+    if True:
         page_i += 1
 
         page_idx = tl.load(kv_page_indices_ptr + indptr_start + page_i)
