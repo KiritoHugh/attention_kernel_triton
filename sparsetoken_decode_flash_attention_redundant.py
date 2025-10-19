@@ -1,10 +1,11 @@
 import torch
+import torch_npu
+DEVICE_STR = "npu"
 import triton
 import triton.language as tl
 import os
 
 import math
-redundant_len = 16
 
 
 
@@ -31,7 +32,7 @@ def sparsetoken_flash_attention_decode_kernel(
     KV_SEQ_BLOCK_SIZE: tl.constexpr,
 ):
     '''
-    q: (B, qo_heads, redundant_len, head_dim)
+    q: (B, qo_heads, 16, head_dim)
     K: (B, kv_heads, SEQ_LEN, head_dim)
     V: (B, kv_heads, SEQ_LEN, head_dim)
     sparse_ind: (B, qo_heads, L_max)  (padded with -1)
@@ -49,60 +50,65 @@ def sparsetoken_flash_attention_decode_kernel(
 
     O_block_ptr = tl.make_block_ptr(
         base = O_ptr + qo_offset,
-        shape = (redundant_len, head_dim),
+        shape = (16, head_dim),
         strides = (O_stride_1, O_stride_D),
-        # 
-        block_shape = (redundant_len, head_dim),
+        block_shape = (16, head_dim),
         offsets = (0, 0),
-        # 
         order = (1, 0),
     )
 
     q_block_ptr = tl.make_block_ptr(
         base = q_ptr + qo_offset,
-        shape = (redundant_len, head_dim),
+        shape = (16, head_dim),
         strides = (q_stride_1, q_stride_D),
-        # 
-        block_shape = (redundant_len, head_dim),
+        block_shape = (16, head_dim),
         offsets = (0, 0),
-        # 
         order = (1, 0),
     )
 
     q_block = tl.load(q_block_ptr)
-    tmp_O_block = tl.zeros((redundant_len, head_dim), dtype=tl.float32)
-    tmp_m_i = tl.zeros((redundant_len,), dtype=tl.float32) - float('inf')
-    tmp_l_i = tl.zeros((redundant_len,), dtype=tl.float32)
+    tmp_O_block = tl.zeros((16, head_dim), dtype=tl.float32)
+    tmp_m_i = tl.zeros((16,), dtype=tl.float32) - float('inf')
+    tmp_l_i = tl.zeros((16,), dtype=tl.float32)
 
     b_h_nzz = tl.load(sparse_nnz_ptr + out_batch_id * sparse_nnz_stride_B + out_head_id * sparse_nnz_stride_H)
     b_h_ind_ptr_base = sparse_ind_ptr + out_batch_id * sparse_ind_stride_B + out_head_id * sparse_ind_stride_H
 
     KV_ranges = tl.arange(0, KV_SEQ_BLOCK_SIZE)
+    head_dim_ranges = tl.arange(0, head_dim)
+
+    # Define base pointers for K and V for the current batch and head
+    K_base_ptr = K_ptr + out_batch_id * K_stride_B + kv_head_id * K_stride_H
+    V_base_ptr = V_ptr + out_batch_id * V_stride_B + kv_head_id * V_stride_H
+    
     for ind_start_idx in range(0, b_h_nzz, KV_SEQ_BLOCK_SIZE):
         mask = ind_start_idx + KV_ranges < b_h_nzz
         token_idx = tl.load(b_h_ind_ptr_base + ind_start_idx + KV_ranges, mask=mask, other=0)
-        k_ptr = K_ptr + out_batch_id * K_stride_B + kv_head_id * K_stride_H + token_idx * K_stride_S
         
-        v_ptr = V_ptr + out_batch_id * V_stride_B + kv_head_id * V_stride_H + token_idx * V_stride_S
+        # Broadcast indices to create 2D offsets for loading a transposed K block
+        k_seq_offsets = tl.reshape(token_idx, (1, KV_SEQ_BLOCK_SIZE)) * K_stride_S
+        k_head_offsets = tl.reshape(head_dim_ranges, (head_dim, 1)) * K_stride_D
+        k_offsets = k_seq_offsets + k_head_offsets
+        k_ptrs = K_base_ptr + k_offsets
+        k_mask = tl.reshape(mask, (1, KV_SEQ_BLOCK_SIZE))
+        shared_K = tl.load(k_ptrs, mask=k_mask, other=0.0)
 
-        shared_K = tl.load(
-            k_ptr[None,:] + tl.arange(0, head_dim)[:, None] * K_stride_D,
-            mask=mask[None, :],
-            other=0.0
-        )
-
-        shared_V = tl.load(
-            v_ptr[:,None] + tl.arange(0, head_dim)[None, :] * V_stride_D,
-            mask=mask[:, None],
-            other=0.0
-        )
+        # Broadcast indices to create 2D offsets for loading a V block
+        v_seq_offsets = tl.reshape(token_idx, (KV_SEQ_BLOCK_SIZE, 1)) * V_stride_S
+        v_head_offsets = tl.reshape(head_dim_ranges, (1, head_dim)) * V_stride_D
+        v_offsets = v_seq_offsets + v_head_offsets
+        v_ptrs = V_base_ptr + v_offsets
+        v_mask = tl.reshape(mask, (KV_SEQ_BLOCK_SIZE, 1))
+        shared_V = tl.load(v_ptrs, mask=v_mask, other=0.0)
 
         # compute attention
         QK_block = tl.dot(q_block, shared_K)
-        QK_block = QK_block * softmax_scale + tl.where(mask, 0.0, -1.0e6)[None, :]
-        # mantain the max value 
+        mask_value = tl.reshape(tl.where(mask, 0.0, -1.0e6), (1, KV_SEQ_BLOCK_SIZE))
+        QK_block = QK_block * softmax_scale + mask_value
+        
+        # maintain the max value 
         m_ij = tl.maximum(tmp_m_i, tl.max(QK_block, axis=1))
-        QK_block -= m_ij[:, None]
+        QK_block -= tl.reshape(m_ij, (16, 1))
 
         # compute exp, sumofexp, 
         P_block = tl.math.exp(QK_block)
@@ -114,21 +120,21 @@ def sparsetoken_flash_attention_decode_kernel(
 
         # compute output
         P_block = P_block.to(tl.float16)
-        tmp_O_block = tmp_O_block * alpha[:, None] 
+        tmp_O_block = tmp_O_block * tl.reshape(alpha, (16, 1))
         tmp_O_block = tl.dot(P_block, shared_V, tmp_O_block)
 
-        # 
+        # update max value
         tmp_m_i = m_ij
 
-    tmp_O_block = tmp_O_block / tmp_l_i[:, None]
+    tmp_O_block = tmp_O_block / tl.reshape(tmp_l_i, (16, 1))
     tl.store(O_block_ptr, tmp_O_block.to(O_ptr.type.element_ty))
 
 
 def sparsetoken_flash_attention_decode(q, K, V, sparse_ind, sparse_nnz, softmax_scale, GQA_group_size):
-    q = q.repeat_interleave(redundant_len, dim=2)  # [B, qo_heads, redundant_len, head_dim]
+    q = q.repeat_interleave(16, dim=2)  # [B, qo_heads, 16, head_dim]
     B, num_qo_heads, _, head_dim = q.shape
 
-    O = torch.zeros((B, num_qo_heads, redundant_len, head_dim), device=q.device, dtype=q.dtype)
+    O = torch.zeros((B, num_qo_heads, 16, head_dim), device=q.device, dtype=q.dtype)
 
     grid = (
         B * num_qo_heads,  # one block per (batch, head)
@@ -239,7 +245,7 @@ def sparsetoken_naive_decode_by_mask(q, K, V, sparse_ind, sparse_nnz, softmax_sc
 def test_op_decode_sparsetoken(GQA_group_size = 4, dtype=torch.float16):
     pass
 
-    device = "cuda"
+    device = DEVICE_STR
     # Test parameters
     num_kv_heads = 8
     num_qo_heads = num_kv_heads * GQA_group_size
@@ -251,21 +257,21 @@ def test_op_decode_sparsetoken(GQA_group_size = 4, dtype=torch.float16):
         torch.empty(
             (BATCH_SIZE, num_qo_heads, 1, head_dim),
             dtype=dtype,
-            device="cuda"
+            device=DEVICE_STR
         ).normal_(mean=0, std=0.5)
     )
     K = (
         torch.empty(
             (BATCH_SIZE, num_kv_heads, SEQ_LEN, head_dim),
             dtype=dtype,
-            device="cuda"
+            device=DEVICE_STR
         ).normal_(mean=0, std=0.5)
     )
     V = (
         torch.empty(
             (BATCH_SIZE, num_kv_heads, SEQ_LEN, head_dim),
             dtype=dtype,
-            device="cuda"
+            device=DEVICE_STR
         ).normal_(mean=0, std=0.5)
     )
 
@@ -364,23 +370,4 @@ if __name__ == "__main__":
 Test on NVIDIA RTX 5000 Ada Generation
 
 Output:
-```
->> q: torch.Size([1, 32, 1, 128]), K: torch.Size([1, 8, 32000, 128]), V: torch.Size([1, 8, 32000, 128]), GQA_group_size: 4
-real kept ratio: 0.019923828125
-shape of ref_O: torch.Size([1, 32, 1, 128])
-shape of tri_O: torch.Size([1, 32, 1, 128])
-Number of NaNs in triton_O: 0
-Ratio of NaNs in triton_O: 0.0
-shape of ref_O_by_mask: torch.Size([1, 32, 1, 128])
-Max absolute values - ref: 0.07025146484375  tri: 0.07025146484375
-Max absolute difference: 3.0517578125e-05
-Benchmarking reference implementation...
-Reference implementation: 4.111 ms
-Benchmarking naive_by_mask implementation...
-Reference by mask implementation: 2.412 ms
-Benchmarking Triton implementation...
-Triton implementation: 0.057 ms
-Speedup over reference: 71.995x
-Speedup over reference by mask: 42.236x
-```
 '''

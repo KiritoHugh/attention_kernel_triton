@@ -1,10 +1,12 @@
 import torch
+import torch_npu
+DEVICE_STR = "npu"
 import triton
 import triton.language as tl
 import os
 
 import math
-redundant_len = 16
+# 16 = 16
 
 
 
@@ -56,13 +58,13 @@ def sparsetoken_flash_attention_decode_paged_kernel(
     KV_SEQ_BLOCK_SIZE: tl.constexpr,
 ):
     '''
-    q: [B, qo_heads, redundant_len, head_dim]
+    q: [B, qo_heads, 16, head_dim]
     paged_kv_cache: [all_pages, 2, kv_heads, page_size, head_dim]
     kv_page_indptr: [B+1]
     kv_page_indices: [total_pages]
     sparse_ind: [B, H, L_max]
     sparse_nnz: [B, H, 1]
-    O: [B, qo_heads, redundant_len, head_dim]
+    O: [B, qo_heads, 16, head_dim]
     '''
 
     B_H_id = tl.program_id(0)
@@ -74,10 +76,10 @@ def sparsetoken_flash_attention_decode_paged_kernel(
 
     O_block_ptr = tl.make_block_ptr(
         base = O_ptr + qo_offset,
-        shape = (redundant_len, HEAD_DIM),
+        shape = (16, HEAD_DIM),
         strides = (stride_O_1, stride_O_D),
         # 
-        block_shape = (redundant_len, HEAD_DIM),
+        block_shape = (16, HEAD_DIM),
         offsets = (0, 0),
         # 
         order = (1, 0),
@@ -85,19 +87,19 @@ def sparsetoken_flash_attention_decode_paged_kernel(
 
     q_block_ptr = tl.make_block_ptr(
         base = q_ptr + qo_offset,
-        shape = (redundant_len, HEAD_DIM),
+        shape = (16, HEAD_DIM),
         strides = (stride_q_1, stride_q_D),
         # 
-        block_shape = (redundant_len, HEAD_DIM),
+        block_shape = (16, HEAD_DIM),
         offsets = (0, 0),
         # 
         order = (1, 0),
     )
 
     q_block = tl.load(q_block_ptr)
-    tmp_O_block = tl.zeros((redundant_len, HEAD_DIM), dtype=tl.float32)
-    tmp_m_i = tl.zeros((redundant_len,), dtype=tl.float32) - float('inf')
-    tmp_l_i = tl.zeros((redundant_len,), dtype=tl.float32)
+    tmp_O_block = tl.zeros((16, HEAD_DIM), dtype=tl.float32)
+    tmp_m_i = tl.zeros((16,), dtype=tl.float32) - float('inf')
+    tmp_l_i = tl.zeros((16,), dtype=tl.float32)
 
     b_h_nzz = tl.load(sparse_nnz_ptr + out_batch_id * stride_sparse_nnz_B + out_head_id * stride_sparse_nnz_H)
     b_h_ind_ptr_base = sparse_ind_ptr + out_batch_id * stride_sparse_ind_B + out_head_id * stride_sparse_ind_H
@@ -171,7 +173,7 @@ def sparsetoken_flash_attention_decode_paged(q, paged_kv_cache, kv_page_indptr, 
     '''
     q: [B, qo_heads, 1, head_dim]
     '''
-    q = q.repeat_interleave(redundant_len, dim=2)  # [B, qo_heads, redundant_len, head_dim]
+    q = q.repeat_interleave(16, dim=2)  # [B, qo_heads, 16, head_dim]
 
     B, num_qo_heads, _, head_dim = q.shape
     num_kv_heads = paged_kv_cache.shape[2]
@@ -181,7 +183,7 @@ def sparsetoken_flash_attention_decode_paged(q, paged_kv_cache, kv_page_indptr, 
     softmax_scale = 1.0 / (head_dim ** 0.5)
 
     # allocate output
-    O = torch.zeros((B, num_qo_heads, redundant_len, head_dim), device=q.device, dtype=q.dtype)
+    O = torch.zeros((B, num_qo_heads, 16, head_dim), device=q.device, dtype=q.dtype)
 
     grid = (
         B * num_qo_heads,  # one block per (batch, head)
@@ -291,7 +293,7 @@ def sparsetoken_naive_paged_attention(q, paged_kv_cache, kv_page_indptr, kv_page
 def test_op_decode_paged_sparsetoken(GQA_group_size = 4, dtype=torch.float16):
     pass
 
-    device = "cuda"
+    device = DEVICE_STR
     # Test parameters
     num_kv_heads = 8
     num_qo_heads = num_kv_heads * GQA_group_size
