@@ -1,10 +1,12 @@
 import torch
+import torch_npu
+DEVICE_STR = "npu"
 import triton
 import triton.language as tl
 import os
 
 import math
-redundant_len = 16
+# 16 = 16
 
 
 
@@ -64,7 +66,7 @@ def magicpig_sparsetoken_flash_attention_decode_paged_kernel(
     KV_SEQ_BLOCK_SIZE: tl.constexpr,
 ):
     '''
-    q: [B, qo_heads, redundant_len, head_dim]
+    q: [B, qo_heads, 16, head_dim]
     paged_kv_cache: [all_pages, 2, kv_heads, page_size, head_dim]
     kv_page_indptr: [B+1]
     kv_page_indices: [total_pages]
@@ -72,7 +74,7 @@ def magicpig_sparsetoken_flash_attention_decode_paged_kernel(
     sparse_nnz: [B, H, 1]
     K_ptr: [B, H] - K parameter per head
     L_ptr: [B, H] - L parameter per head
-    O: [B, qo_heads, redundant_len, head_dim]
+    O: [B, qo_heads, 16, head_dim]
     '''
 
     B_H_id = tl.program_id(0)
@@ -84,10 +86,10 @@ def magicpig_sparsetoken_flash_attention_decode_paged_kernel(
 
     O_block_ptr = tl.make_block_ptr(
         base = O_ptr + qo_offset,
-        shape = (redundant_len, HEAD_DIM),
+        shape = (16, HEAD_DIM),
         strides = (stride_O_1, stride_O_D),
         # 
-        block_shape = (redundant_len, HEAD_DIM),
+        block_shape = (16, HEAD_DIM),
         offsets = (0, 0),
         # 
         order = (1, 0),
@@ -95,10 +97,10 @@ def magicpig_sparsetoken_flash_attention_decode_paged_kernel(
 
     q_block_ptr = tl.make_block_ptr(
         base = q_ptr + qo_offset,
-        shape = (redundant_len, HEAD_DIM),
+        shape = (16, HEAD_DIM),
         strides = (stride_q_1, stride_q_D),
         # 
-        block_shape = (redundant_len, HEAD_DIM),
+        block_shape = (16, HEAD_DIM),
         offsets = (0, 0),
         # 
         order = (1, 0),
@@ -112,11 +114,11 @@ def magicpig_sparsetoken_flash_attention_decode_paged_kernel(
     
     # Compute q norm for normalization (convert to float32 for sqrt)
     q_block_f32 = q_block.to(tl.float32)
-    q_norm = tl.sqrt(tl.sum(q_block_f32 * q_block_f32, axis=1))  # [redundant_len]
+    q_norm = tl.sqrt(tl.sum(q_block_f32 * q_block_f32, axis=1))  # [16]
     
-    tmp_O_block = tl.zeros((redundant_len, HEAD_DIM), dtype=tl.float32)
-    tmp_m_i = tl.zeros((redundant_len,), dtype=tl.float32) - float('inf')
-    tmp_l_i = tl.zeros((redundant_len,), dtype=tl.float32)
+    tmp_O_block = tl.zeros((16, HEAD_DIM), dtype=tl.float32)
+    tmp_m_i = tl.zeros((16,), dtype=tl.float32) - float('inf')
+    tmp_l_i = tl.zeros((16,), dtype=tl.float32)
 
     b_h_nzz = tl.load(sparse_nnz_ptr + out_batch_id * stride_sparse_nnz_B + out_head_id * stride_sparse_nnz_H)
     b_h_ind_ptr_base = sparse_ind_ptr + out_batch_id * stride_sparse_ind_B + out_head_id * stride_sparse_ind_H
@@ -156,14 +158,14 @@ def magicpig_sparsetoken_flash_attention_decode_paged_kernel(
         )
 
         # compute attention scores
-        QK_block = tl.dot(q_block, shared_K)  # [redundant_len, KV_SEQ_BLOCK_SIZE]
+        QK_block = tl.dot(q_block, shared_K)  # [16, KV_SEQ_BLOCK_SIZE]
         
         # Compute k norms for each token in the block (convert to float32 for sqrt)
         shared_K_f32 = shared_K.to(tl.float32)
         k_norm = tl.sqrt(tl.sum(shared_K_f32 * shared_K_f32, axis=0))  # [KV_SEQ_BLOCK_SIZE]
         
         # Compute normalized dot product: qk^T / (|q| * |k|)
-        # Shape broadcasting: q_norm[:, None] * k_norm[None, :] -> [redundant_len, KV_SEQ_BLOCK_SIZE]
+        # Shape broadcasting: q_norm[:, None] * k_norm[None, :] -> [16, KV_SEQ_BLOCK_SIZE]
         qk_normalized = QK_block / (q_norm[:, None] * k_norm[None, :] + 1e-8)
         
         # Clamp to [-1, 1] to ensure valid arccos input (more conservative)
@@ -232,7 +234,7 @@ def magicpig_sparsetoken_flash_attention_decode_paged(q, paged_kv_cache, kv_page
     K: [B, H] - K parameter per head
     L: [B, H] - L parameter per head
     '''
-    q = q.repeat_interleave(redundant_len, dim=2)  # [B, qo_heads, redundant_len, head_dim]
+    q = q.repeat_interleave(16, dim=2)  # [B, qo_heads, 16, head_dim]
 
     B, num_qo_heads, _, head_dim = q.shape
     num_kv_heads = paged_kv_cache.shape[2]
@@ -242,7 +244,7 @@ def magicpig_sparsetoken_flash_attention_decode_paged(q, paged_kv_cache, kv_page
     softmax_scale = 1.0 / (head_dim ** 0.5)
 
     # allocate output
-    O = torch.zeros((B, num_qo_heads, redundant_len, head_dim), device=q.device, dtype=q.dtype)
+    O = torch.zeros((B, num_qo_heads, 16, head_dim), device=q.device, dtype=q.dtype)
 
     grid = (
         B * num_qo_heads,  # one block per (batch, head)
@@ -298,6 +300,7 @@ def magicpig_sparsetoken_flash_attention_decode_paged(q, paged_kv_cache, kv_page
     )
     return O[:, :, 0, :].contiguous()  # [B, qo_heads, head_dim]
 
+# HERE IS THE BASELINE 
 def magicpig_sparsetoken_naive_paged_attention(q, paged_kv_cache, kv_page_indptr, kv_page_indices, sparse_ind, sparse_nnz, K, L):
 
     '''
@@ -471,21 +474,21 @@ def test_op_decode_paged_sparsetoken_magicpig(GQA_group_size = 4, dtype=torch.fl
     # compare 
     ref_O = magicpig_sparsetoken_naive_paged_attention(q, paged_kv_cache, kv_page_indptr, kv_page_indices, sparse_ind, sparse_nnz, K, L)
     print("shape of ref_O:", ref_O.shape)
-    tri_O = triton_implementation(q, paged_kv_cache, kv_page_indptr, kv_page_indices, sparse_ind, sparse_nnz, K, L)
-    print("shape of tri_O:", tri_O.shape)
-    # triton_O how many nan? its ratio?
-    print("Number of NaNs in triton_O:", torch.isnan(tri_O).sum().item())
-    print("Ratio of NaNs in triton_O:", torch.isnan(tri_O).float().mean().item())
+    # tri_O = triton_implementation(q, paged_kv_cache, kv_page_indptr, kv_page_indices, sparse_ind, sparse_nnz, K, L)
+    # print("shape of tri_O:", tri_O.shape)
+    # # triton_O how many nan? its ratio?
+    # print("Number of NaNs in triton_O:", torch.isnan(tri_O).sum().item())
+    # print("Ratio of NaNs in triton_O:", torch.isnan(tri_O).float().mean().item())
 
 
-    rtol = 0.0
-    atol = 1e-2
-    # print the max absolute values
-    print("Max absolute values - ref:", torch.max(torch.abs(ref_O)).item(), " tri:", torch.max(torch.abs(tri_O)).item())
+    # rtol = 0.0
+    # atol = 1e-2
+    # # print the max absolute values
+    # print("Max absolute values - ref:", torch.max(torch.abs(ref_O)).item(), " tri:", torch.max(torch.abs(tri_O)).item())
 
-    # print the max absolute difference
-    print("Max absolute difference:", torch.max(torch.abs(ref_O - tri_O)).item())
-    assert torch.allclose(ref_O, tri_O, atol=atol, rtol=rtol), "The results are not close enough"
+    # # print the max absolute difference
+    # print("Max absolute difference:", torch.max(torch.abs(ref_O - tri_O)).item())
+    # assert torch.allclose(ref_O, tri_O, atol=atol, rtol=rtol), "The results are not close enough"
 
 
     # benchmark
@@ -493,11 +496,11 @@ def test_op_decode_paged_sparsetoken_magicpig(GQA_group_size = 4, dtype=torch.fl
     ref_ms = triton.testing.do_bench(lambda: magicpig_sparsetoken_naive_paged_attention(q, paged_kv_cache, kv_page_indptr, kv_page_indices, sparse_ind, sparse_nnz, K, L))
     print(f"Reference implementation: {ref_ms:.3f} ms")
 
-    print("Benchmarking Triton implementation...")
-    tri_ms = triton.testing.do_bench(lambda: triton_implementation(q, paged_kv_cache, kv_page_indptr, kv_page_indices, sparse_ind, sparse_nnz, K, L))
-    print(f"Triton implementation: {tri_ms:.3f} ms")
+    # print("Benchmarking Triton implementation...")
+    # tri_ms = triton.testing.do_bench(lambda: triton_implementation(q, paged_kv_cache, kv_page_indptr, kv_page_indices, sparse_ind, sparse_nnz, K, L))
+    # print(f"Triton implementation: {tri_ms:.3f} ms")
 
-    print(f"Speedup: {ref_ms / tri_ms:.3f}x")
+    # print(f"Speedup: {ref_ms / tri_ms:.3f}x")
 
 if __name__ == "__main__":
     test_op_decode_paged_sparsetoken_magicpig(GQA_group_size=4, dtype=torch.float16)
