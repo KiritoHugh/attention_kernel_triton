@@ -233,6 +233,7 @@ def sparsetoken_flash_attention_decode_paged(q, paged_kv_cache, kv_page_indptr, 
     )
     return O[:, :, 0, :].contiguous()  # [B, qo_heads, head_dim]
 
+# HERE IS THE BASELINE
 def sparsetoken_naive_paged_attention(q, paged_kv_cache, kv_page_indptr, kv_page_indices, sparse_ind, sparse_nnz):
 
     '''
@@ -370,21 +371,25 @@ def test_op_decode_paged_sparsetoken(GQA_group_size = 4, dtype=torch.float16):
     # compare 
     ref_O = sparsetoken_naive_paged_attention(q, paged_kv_cache, kv_page_indptr, kv_page_indices, sparse_ind, sparse_nnz)
     print("shape of ref_O:", ref_O.shape)
-    tri_O = triton_implementation(q, paged_kv_cache, kv_page_indptr, kv_page_indices, sparse_ind, sparse_nnz)
-    print("shape of tri_O:", tri_O.shape)
-    # triton_O how many nan? its ratio?
-    print("Number of NaNs in triton_O:", torch.isnan(tri_O).sum().item())
-    print("Ratio of NaNs in triton_O:", torch.isnan(tri_O).float().mean().item())
+
+    # just for evaluating the baseline in pytorch npu
+    print("complete baseline running.")
+    
+    # tri_O = triton_implementation(q, paged_kv_cache, kv_page_indptr, kv_page_indices, sparse_ind, sparse_nnz)
+    # print("shape of tri_O:", tri_O.shape)
+    # # triton_O how many nan? its ratio?
+    # print("Number of NaNs in triton_O:", torch.isnan(tri_O).sum().item())
+    # print("Ratio of NaNs in triton_O:", torch.isnan(tri_O).float().mean().item())
 
 
-    rtol = 0.0
-    atol = 1e-2
-    # print the max absolute values
-    print("Max absolute values - ref:", torch.max(torch.abs(ref_O)).item(), " tri:", torch.max(torch.abs(tri_O)).item())
+    # rtol = 0.0
+    # atol = 1e-2
+    # # print the max absolute values
+    # print("Max absolute values - ref:", torch.max(torch.abs(ref_O)).item(), " tri:", torch.max(torch.abs(tri_O)).item())
 
-    # print the max absolute difference
-    print("Max absolute difference:", torch.max(torch.abs(ref_O - tri_O)).item())
-    assert torch.allclose(ref_O, tri_O, atol=atol, rtol=rtol), "The results are not close enough"
+    # # print the max absolute difference
+    # print("Max absolute difference:", torch.max(torch.abs(ref_O - tri_O)).item())
+    # assert torch.allclose(ref_O, tri_O, atol=atol, rtol=rtol), "The results are not close enough"
 
 
     # benchmark
@@ -392,11 +397,11 @@ def test_op_decode_paged_sparsetoken(GQA_group_size = 4, dtype=torch.float16):
     ref_ms = triton.testing.do_bench(lambda: sparsetoken_naive_paged_attention(q, paged_kv_cache, kv_page_indptr, kv_page_indices, sparse_ind, sparse_nnz))
     print(f"Reference implementation: {ref_ms:.3f} ms")
 
-    print("Benchmarking Triton implementation...")
-    tri_ms = triton.testing.do_bench(lambda: triton_implementation(q, paged_kv_cache, kv_page_indptr, kv_page_indices, sparse_ind, sparse_nnz))
-    print(f"Triton implementation: {tri_ms:.3f} ms")
+    # print("Benchmarking Triton implementation...")
+    # tri_ms = triton.testing.do_bench(lambda: triton_implementation(q, paged_kv_cache, kv_page_indptr, kv_page_indices, sparse_ind, sparse_nnz))
+    # print(f"Triton implementation: {tri_ms:.3f} ms")
 
-    print(f"Speedup: {ref_ms / tri_ms:.3f}x")
+    # print(f"Speedup: {ref_ms / tri_ms:.3f}x")
 
 if __name__ == "__main__":
     test_op_decode_paged_sparsetoken(GQA_group_size=4, dtype=torch.float16)
