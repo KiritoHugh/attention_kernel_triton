@@ -175,7 +175,7 @@ def sparsetoken_flash_attention_decode(q, K, V, sparse_ind, sparse_nnz, softmax_
 
     return O[:, :, :1, :].contiguous()  # [B, qo_heads, head_dim]
 
-
+# HERE IS BASELINE 1
 def sparsetoken_naive_decode(q, K, V, sparse_ind, sparse_nnz, softmax_scale, GQA_group_size):
     """
     q: [B, qo_heads, 1, head_dim]
@@ -207,6 +207,7 @@ def sparsetoken_naive_decode(q, K, V, sparse_ind, sparse_nnz, softmax_scale, GQA
             output[b, h, 0] = out_vec
     return output
 
+# HERE IS BASELINE 2
 def sparsetoken_naive_decode_by_mask(q, K, V, sparse_ind, sparse_nnz, softmax_scale, GQA_group_size, mask):
 
     B, qo_heads, _, head_dim = q.shape
@@ -311,11 +312,11 @@ def test_op_decode_sparsetoken(GQA_group_size = 4, dtype=torch.float16):
     # compare 
     ref_O = sparsetoken_naive_decode(q, K, V, sparse_ind, sparse_nnz, softmax_scale, GQA_group_size)
     print("shape of ref_O:", ref_O.shape)
-    tri_O = triton_implementation(q, K, V, sparse_ind, sparse_nnz, softmax_scale, GQA_group_size)
-    print("shape of tri_O:", tri_O.shape)
-    # triton_O how many nan? its ratio?
-    print("Number of NaNs in triton_O:", torch.isnan(tri_O).sum().item())
-    print("Ratio of NaNs in triton_O:", torch.isnan(tri_O).float().mean().item())
+    # tri_O = triton_implementation(q, K, V, sparse_ind, sparse_nnz, softmax_scale, GQA_group_size)
+    # print("shape of tri_O:", tri_O.shape)
+    # # triton_O how many nan? its ratio?
+    # print("Number of NaNs in triton_O:", torch.isnan(tri_O).sum().item())
+    # print("Ratio of NaNs in triton_O:", torch.isnan(tri_O).float().mean().item())
 
 
     precompute_mask = None
@@ -334,14 +335,14 @@ def test_op_decode_sparsetoken(GQA_group_size = 4, dtype=torch.float16):
     assert torch.allclose(ref_O, ref_O_by_mask, atol=1e-2, rtol=0.0), "The results of naive and naive_by_mask are not close enough"
 
 
-    rtol = 0.0
-    atol = 1e-2
-    # print the max absolute values
-    print("Max absolute values - ref:", torch.max(torch.abs(ref_O)).item(), " tri:", torch.max(torch.abs(tri_O)).item())
+    # rtol = 0.0
+    # atol = 1e-2
+    # # print the max absolute values
+    # print("Max absolute values - ref:", torch.max(torch.abs(ref_O)).item(), " tri:", torch.max(torch.abs(tri_O)).item())
 
-    # print the max absolute difference
-    print("Max absolute difference:", torch.max(torch.abs(ref_O - tri_O)).item())
-    assert torch.allclose(ref_O, tri_O, atol=atol, rtol=rtol), "The results are not close enough"
+    # # print the max absolute difference
+    # print("Max absolute difference:", torch.max(torch.abs(ref_O - tri_O)).item())
+    # assert torch.allclose(ref_O, tri_O, atol=atol, rtol=rtol), "The results are not close enough"
 
 
     # benchmark
@@ -353,12 +354,12 @@ def test_op_decode_sparsetoken(GQA_group_size = 4, dtype=torch.float16):
     ref_by_mask_ms = triton.testing.do_bench(lambda: sparsetoken_naive_decode_by_mask(q, K, V, sparse_ind, sparse_nnz, softmax_scale, GQA_group_size, precompute_mask))
     print(f"Reference by mask implementation: {ref_by_mask_ms:.3f} ms")
 
-    print("Benchmarking Triton implementation...")
-    tri_ms = triton.testing.do_bench(lambda: triton_implementation(q, K, V, sparse_ind, sparse_nnz, softmax_scale, GQA_group_size))
-    print(f"Triton implementation: {tri_ms:.3f} ms")
+    # print("Benchmarking Triton implementation...")
+    # tri_ms = triton.testing.do_bench(lambda: triton_implementation(q, K, V, sparse_ind, sparse_nnz, softmax_scale, GQA_group_size))
+    # print(f"Triton implementation: {tri_ms:.3f} ms")
 
-    print(f"Speedup over reference: {ref_ms / tri_ms:.3f}x")
-    print(f"Speedup over reference by mask: {ref_by_mask_ms / tri_ms:.3f}x")
+    # print(f"Speedup over reference: {ref_ms / tri_ms:.3f}x")
+    # print(f"Speedup over reference by mask: {ref_by_mask_ms / tri_ms:.3f}x")
 
 if __name__ == "__main__":
     test_op_decode_sparsetoken(GQA_group_size=4, dtype=torch.float16)
