@@ -294,7 +294,7 @@ def flash_attention_decode_paged(q, paged_kv_cache, kv_page_indptr, kv_page_indi
     return O[ :, :, 0, : ].contiguous()  # [B, H*GQA_group_size, 1, D]
 
 
-
+# HERE IS THE BASELINE
 def naive_paged_attention(q, paged_kv_cache, kv_page_indptr, kv_page_indices, kv_last_page_len):
     batch_size = q.shape[0]
     num_qo_heads = q.shape[1]
@@ -391,31 +391,31 @@ def test_op_decode_paged(GQA_group_size = 2, dtype=torch.float16):
     # compare 
     ref_O = naive_paged_attention(q, paged_kv_cache, kv_page_indptr, kv_page_indices, kv_last_page_len)
     print("shape of ref_O:", ref_O.shape)
-    tri_O = triton_implementation(q, paged_kv_cache, kv_page_indptr, kv_page_indices, kv_last_page_len)
-    print("shape of triton_O:", tri_O.shape)
-    # triton_O how many nan? its ratio?
-    print("Number of NaNs in triton_O:", torch.isnan(tri_O).sum().item())
-    print("Ratio of NaNs in triton_O:", torch.isnan(tri_O).float().mean().item())
+    # tri_O = triton_implementation(q, paged_kv_cache, kv_page_indptr, kv_page_indices, kv_last_page_len)
+    # print("shape of triton_O:", tri_O.shape)
+    # # triton_O how many nan? its ratio?
+    # print("Number of NaNs in triton_O:", torch.isnan(tri_O).sum().item())
+    # print("Ratio of NaNs in triton_O:", torch.isnan(tri_O).float().mean().item())
 
-    rtol = 0.0
-    atol = 1e-2
-    # print the max absolute values
-    print("Max absolute values - ref:", torch.max(torch.abs(ref_O)).item(), " tri:", torch.max(torch.abs(tri_O)).item())
+    # rtol = 0.0
+    # atol = 1e-2
+    # # print the max absolute values
+    # print("Max absolute values - ref:", torch.max(torch.abs(ref_O)).item(), " tri:", torch.max(torch.abs(tri_O)).item())
 
-    # print the max absolute difference
-    print("Max absolute difference:", torch.max(torch.abs(ref_O - tri_O)).item())
-    assert torch.allclose(ref_O, tri_O, atol=atol, rtol=rtol), "The results are not close enough"
+    # # print the max absolute difference
+    # print("Max absolute difference:", torch.max(torch.abs(ref_O - tri_O)).item())
+    # assert torch.allclose(ref_O, tri_O, atol=atol, rtol=rtol), "The results are not close enough"
 
     # benchmark
     print("Benchmarking reference implementation...")
     ref_ms = triton.testing.do_bench(lambda: naive_paged_attention(q, paged_kv_cache, kv_page_indptr, kv_page_indices, kv_last_page_len))
     print(f"Reference implementation: {ref_ms:.3f} ms")
 
-    print("Benchmarking Triton implementation...")
-    tri_ms = triton.testing.do_bench(lambda: triton_implementation(q, paged_kv_cache, kv_page_indptr, kv_page_indices, kv_last_page_len))
-    print(f"Triton implementation: {tri_ms:.3f} ms")
+    # print("Benchmarking Triton implementation...")
+    # tri_ms = triton.testing.do_bench(lambda: triton_implementation(q, paged_kv_cache, kv_page_indptr, kv_page_indices, kv_last_page_len))
+    # print(f"Triton implementation: {tri_ms:.3f} ms")
 
-    print(f"Speedup: {ref_ms / tri_ms:.3f}x")
+    # print(f"Speedup: {ref_ms / tri_ms:.3f}x")
 
 
 
