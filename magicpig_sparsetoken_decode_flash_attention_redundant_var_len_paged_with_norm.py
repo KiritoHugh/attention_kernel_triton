@@ -404,7 +404,7 @@ def magicpig_sparsetoken_naive_paged_attention(q, paged_kv_cache, kv_page_indptr
 def test_op_decode_paged_sparsetoken_magicpig(GQA_group_size = 4, dtype=torch.float16):
     pass
 
-    device = "cuda"
+    device = DEVICE_STR
     # Test parameters
     num_kv_heads = 8
     num_qo_heads = num_kv_heads * GQA_group_size
