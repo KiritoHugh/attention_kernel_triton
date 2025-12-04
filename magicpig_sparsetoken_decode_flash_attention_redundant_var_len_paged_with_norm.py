@@ -36,8 +36,9 @@ def tl_arccos(x):
     # arccos(x) = r * sqrt(1 - |x|)
     result = r * p
 
+    PI = 3.14159265358979323846
     # Adjust sign: acos(-x) = π - acos(x)
-    result = tl.where(x < 0, tl.pi - result, result)
+    result = tl.where(x < 0, PI - result, result)
 
     return result
     
