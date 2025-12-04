@@ -13,6 +13,11 @@ def log_print(msg, output_file=None):
         output_file.write(msg + "\n")
         output_file.flush()
 
+def tl_arccos(x):
+    # clamp inputs to valid range to avoid nan from numerical error:
+    x = tl.maximum(tl.minimum(x, 1.0), -1.0)
+    return tl.atan2(tl.sqrt(1.0 - x * x), x)
+    
 @triton.jit
 def magicpig_custom_kernel(
     q_ptr,
@@ -124,7 +129,7 @@ def magicpig_custom_kernel(
         qk_normalized = tl.where(qk_normalized < -1.0 + 1e-7, -1.0 + 1e-7, qk_normalized)
         
         # 4. 计算 p_i = 1 - (1/π) * arccos(qk_normalized)
-        p_i = 1.0 - (1.0 / PI) * tl.acos(qk_normalized)
+        p_i = 1.0 - (1.0 / PI) * tl_arccos(qk_normalized)
         p_i = tl.where(p_i > 1.0, 1.0, p_i)
         p_i = tl.where(p_i < 0.0, 0.0, p_i)
         
