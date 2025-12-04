@@ -124,7 +124,7 @@ def magicpig_custom_kernel(
         qk_normalized = tl.where(qk_normalized < -1.0 + 1e-7, -1.0 + 1e-7, qk_normalized)
         
         # 4. 计算 p_i = 1 - (1/π) * arccos(qk_normalized)
-        p_i = 1.0 - (1.0 / PI) * tl.math.acos(qk_normalized)
+        p_i = 1.0 - (1.0 / PI) * tl.math.arccos(qk_normalized)
         p_i = tl.where(p_i > 1.0, 1.0, p_i)
         p_i = tl.where(p_i < 0.0, 0.0, p_i)
         
