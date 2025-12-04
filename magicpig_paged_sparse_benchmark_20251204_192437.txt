@@ -1,0 +1,75 @@
+======================================================================
+MagicPig Paged Sparse Attention Benchmark
+GQA_group_size: 4
+dtype: torch.float16
+======================================================================
+
+
+######################################################################
+Round 1: kept_ratio = 0.02
+######################################################################
+
+real kept ratio: 0.019889029105692322
+shape of ref_O: torch.Size([3, 32, 256])
+complete baseline running.
+
+>> Testing Triton implementation (MagicPig)...
+shape of tri_O: torch.Size([3, 32, 256])
+Number of NaNs in triton_O: 0
+
+>> Correctness check...
+Max absolute values - ref: 0.14990234375, tri: 0.14990234375
+Max absolute difference: 0.0001220703125
+Triton implementation correctness check passed!
+
+======================================================================
+BENCHMARK RESULTS (MagicPig Paged)
+======================================================================
+Benchmarking Reference (PyTorch Loop)...
+  Time: 25113.652 ms
+
+Benchmarking Triton (MagicPig)...
+  Time: 7.315 ms
+
+======================================================================
+性能对比
+----------------------------------------------------------------------
+Reference                       25113.652 ms
+Triton (MagicPig)                   7.315 ms    Speedup: 3433.20x
+======================================================================
+
+
+######################################################################
+Round 2: kept_ratio = 0.04
+######################################################################
+
+real kept ratio: 0.03981671698337165
+shape of ref_O: torch.Size([3, 32, 256])
+complete baseline running.
+
+>> Testing Triton implementation (MagicPig)...
+shape of tri_O: torch.Size([3, 32, 256])
+Number of NaNs in triton_O: 0
+
+>> Correctness check...
+Max absolute values - ref: 0.10614013671875, tri: 0.10614013671875
+Max absolute difference: 6.103515625e-05
+Triton implementation correctness check passed!
+
+======================================================================
+BENCHMARK RESULTS (MagicPig Paged)
+======================================================================
+Benchmarking Reference (PyTorch Loop)...
+  Time: 50781.754 ms
+
+Benchmarking Triton (MagicPig)...
+  Time: 14.511 ms
+
+======================================================================
+性能对比
+----------------------------------------------------------------------
+Reference                       50781.754 ms
+Triton (MagicPig)                  14.511 ms    Speedup: 3499.60x
+======================================================================
+
+Done. Results saved to magicpig_paged_sparse_benchmark_20251204_192437.txt

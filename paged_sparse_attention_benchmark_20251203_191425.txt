@@ -1,0 +1,144 @@
+======================================================================
+Paged Sparse Attention Benchmark - Multiple Ratios Test
+测试时间: 2025-12-03 19:14:25
+GQA_group_size: 4
+dtype: torch.float16
+======================================================================
+
+
+######################################################################
+第 1 轮测试: kept_ratio = 0.02
+######################################################################
+
+real kept ratio: 0.019955317574134847
+shape of ref_O: torch.Size([3, 32, 256])
+complete baseline running.
+
+>> Testing NPU Fusion Attention (Dense) for Paged KV Cache...
+shape of npu_fusion_O: torch.Size([3, 32, 256])
+
+>> Testing Triton implementation...
+shape of tri_O: torch.Size([3, 32, 256])
+Number of NaNs in triton_O: 0
+Ratio of NaNs in triton_O: 0.0
+
+>> Correctness check for Triton implementation...
+Max absolute values - ref: 0.213134765625, tri: 0.213134765625
+Max absolute difference: 0.0001220703125
+Triton implementation correctness check passed!
+
+======================================================================
+BENCHMARK RESULTS (Paged KV Cache)
+======================================================================
+Benchmarking Torch小算子拼接 (Reference - Paged)...
+  Time: 24799.162 ms
+
+Benchmarking 融合全量Attention (NPU Fusion - Paged)...
+  Time: 178.209 ms
+
+Benchmarking Triton实现 (Sparse - Paged)...
+  Time: 5.753 ms
+
+======================================================================
+性能对比总结 (Paged KV Cache)
+======================================================================
+实现方式                           用时 (ms)         相对加速           
+----------------------------------------------------------------------
+Torch小算子拼接 (Paged)              24799.162    1.00x (baseline)
+融合全量Attention (NPU)               178.209    139.16x
+Triton实现 (Sparse)                   5.753    4311.01x
+======================================================================
+
+
+######################################################################
+第 2 轮测试: kept_ratio = 0.04
+######################################################################
+
+real kept ratio: 0.0399191969337133
+shape of ref_O: torch.Size([3, 32, 256])
+complete baseline running.
+
+>> Testing NPU Fusion Attention (Dense) for Paged KV Cache...
+shape of npu_fusion_O: torch.Size([3, 32, 256])
+
+>> Testing Triton implementation...
+shape of tri_O: torch.Size([3, 32, 256])
+Number of NaNs in triton_O: 0
+Ratio of NaNs in triton_O: 0.0
+
+>> Correctness check for Triton implementation...
+Max absolute values - ref: 0.11773681640625, tri: 0.11767578125
+Max absolute difference: 0.000152587890625
+Triton implementation correctness check passed!
+
+======================================================================
+BENCHMARK RESULTS (Paged KV Cache)
+======================================================================
+Benchmarking Torch小算子拼接 (Reference - Paged)...
+  Time: 50192.246 ms
+
+Benchmarking 融合全量Attention (NPU Fusion - Paged)...
+  Time: 181.198 ms
+
+Benchmarking Triton实现 (Sparse - Paged)...
+  Time: 11.542 ms
+
+======================================================================
+性能对比总结 (Paged KV Cache)
+======================================================================
+实现方式                           用时 (ms)         相对加速           
+----------------------------------------------------------------------
+Torch小算子拼接 (Paged)              50192.246    1.00x (baseline)
+融合全量Attention (NPU)               181.198    277.00x
+Triton实现 (Sparse)                  11.542    4348.80x
+======================================================================
+
+
+######################################################################
+第 3 轮测试: kept_ratio = 0.05
+######################################################################
+
+real kept ratio: 0.04993933780427175
+shape of ref_O: torch.Size([3, 32, 256])
+complete baseline running.
+
+>> Testing NPU Fusion Attention (Dense) for Paged KV Cache...
+shape of npu_fusion_O: torch.Size([3, 32, 256])
+
+>> Testing Triton implementation...
+shape of tri_O: torch.Size([3, 32, 256])
+Number of NaNs in triton_O: 0
+Ratio of NaNs in triton_O: 0.0
+
+>> Correctness check for Triton implementation...
+Max absolute values - ref: 0.11578369140625, tri: 0.11578369140625
+Max absolute difference: 0.000152587890625
+Triton implementation correctness check passed!
+
+======================================================================
+BENCHMARK RESULTS (Paged KV Cache)
+======================================================================
+Benchmarking Torch小算子拼接 (Reference - Paged)...
+  Time: 63711.867 ms
+
+Benchmarking 融合全量Attention (NPU Fusion - Paged)...
+  Time: 180.987 ms
+
+Benchmarking Triton实现 (Sparse - Paged)...
+  Time: 14.412 ms
+
+======================================================================
+性能对比总结 (Paged KV Cache)
+======================================================================
+实现方式                           用时 (ms)         相对加速           
+----------------------------------------------------------------------
+Torch小算子拼接 (Paged)              63711.867    1.00x (baseline)
+融合全量Attention (NPU)               180.987    352.02x
+Triton实现 (Sparse)                  14.412    4420.70x
+======================================================================
+
+
+======================================================================
+所有测试完成！
+结果已保存到: paged_sparse_attention_benchmark_20251203_191425.txt
+======================================================================
