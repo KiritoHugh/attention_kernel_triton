@@ -15,9 +15,31 @@ def log_print(msg, output_file=None):
 
 @triton.jit
 def tl_arccos(x):
-    # clamp inputs to valid range to avoid nan from numerical error:
+    # Clamp to [-1, 1]
     x = tl.maximum(tl.minimum(x, 1.0), -1.0)
-    return tl.atan2(tl.sqrt(1.0 - x * x), x)
+
+    # Polynomial approximation for arccos on [-1,1]
+    # Source: Cephes library approximation
+    z = tl.abs(x)
+    p = tl.sqrt(1 - z)
+
+    # Polynomial coefficients
+    c1 = 1.5707963050
+    c2 = -0.2145988016
+    c3 = 0.0889789874
+    c4 = -0.0501743046
+    c5 = 0.0308918810
+    c6 = -0.0170881256
+
+    r = (((((c6*z + c5)*z + c4)*z + c3)*z + c2)*z + c1)
+
+    # arccos(x) = r * sqrt(1 - |x|)
+    result = r * p
+
+    # Adjust sign: acos(-x) = π - acos(x)
+    result = tl.where(x < 0, tl.pi - result, result)
+
+    return result
     
 @triton.jit
 def magicpig_custom_kernel(
