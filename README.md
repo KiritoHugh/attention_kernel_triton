@@ -1,3 +1,13 @@
+# Delivery Summary
+
+core code files:
+- magicpig_sparsetoken_decode_flash_attention_redundant_var_len_paged_with_norm.py
+- sparsetoken_decode_flash_attention_redundant_var_len_paged.py
+
+according log files:
+- magicpig_paged_sparse_benchmark_20251204_192437.txt
+- sparsetoken_decode_flash_attention_redundant_var_len_paged_20251203_191425.txt
+
 # 1 attention_kernel_triton
 
 
