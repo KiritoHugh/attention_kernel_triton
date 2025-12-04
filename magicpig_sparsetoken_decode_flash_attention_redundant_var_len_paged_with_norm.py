@@ -13,6 +13,7 @@ def log_print(msg, output_file=None):
         output_file.write(msg + "\n")
         output_file.flush()
 
+@triton.jit
 def tl_arccos(x):
     # clamp inputs to valid range to avoid nan from numerical error:
     x = tl.maximum(tl.minimum(x, 1.0), -1.0)
